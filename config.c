@@ -10,6 +10,17 @@
 #include "dialog.h"
 #include "storage.h"
 
+#ifdef DO_PKCS11_AUTH
+#include "pkcs11.h"
+#include "sc.h"
+#endif
+#ifdef DO_CAPI_AUTH
+#include "capi.h"
+#include <Specstrings.h>
+#include <Wincrypt.h>
+#include <CryptDlg.h>
+#endif
+
 #define PRINTER_DISABLED_STRING "None (printing disabled)"
 
 #define HOST_BOX_TITLE "Host Name (or IP address)"
@@ -614,6 +625,344 @@ static void sessionsaver_data_free(void *ssdv)
     sfree(ssd->savedsession);
     sfree(ssd);
 }
+
+#ifdef DO_PKCS11_AUTH
+void *m_label_dlg = NULL;
+void *m_cert_dlg = NULL;
+void *m_keystring_dlg = NULL;
+void *sc_get_label_dialog() {
+    return m_label_dlg;
+}
+void *m_label_ctrl = NULL;
+void *m_cert_ctrl = NULL;
+void *m_keystring_ctrl = NULL;
+void *sc_get_label_ctrl() {
+    return m_label_ctrl;
+}
+
+void sc_cert_handler(union control *ctrl, void *dlg, void *data, int event);
+void sc_tokenlabel_handler(union control *ctrl, void *dlg, void *data, int event ) {
+    Conf *conf = (Conf *)data;
+    Filename *pkcs11_libfile;
+    m_label_dlg = dlg;
+    m_label_ctrl = ctrl;
+
+    pkcs11_libfile = conf_get_filename(conf, CONF_pkcs11_libfile);
+    if(event == EVENT_REFRESH) {
+	char *pkcs11_token_label;
+	dlg_update_start(ctrl, dlg);
+	dlg_listbox_clear(ctrl, dlg);
+	if (filename_is_null(pkcs11_libfile)) {
+	    dlg_listbox_add(ctrl, dlg, "<E: SELECT LIBRARY FIRST!>");
+	} else {
+	    int i;
+	    CK_RV  rv = 0;
+	    HINSTANCE hLib = LoadLibrary(filename_to_str(pkcs11_libfile));
+	    CK_C_GetFunctionList pGFL = (CK_RV (*)(CK_FUNCTION_LIST_PTR_PTR))GetProcAddress(hLib, "C_GetFunctionList");
+	    if (pGFL == NULL) {
+		dlg_listbox_add(ctrl, dlg, "<E: WRONG LIBRARY!>");
+	    } else {
+		CK_FUNCTION_LIST_PTR fl  = 0;
+		rv = pGFL(&fl);
+		if(rv != CKR_OK) {
+		    dlg_listbox_add(ctrl, dlg, "<E: ACCESS TO LIBRARY FAILED!>");
+		} else {
+		    int rv1, rv2;
+		    unsigned long slot_count = 16;
+		    CK_SLOT_ID slots[16];
+		    rv1 = fl->C_Initialize(0);
+		    rv2 = fl->C_GetSlotList(TRUE, slots, &slot_count);
+		    if((rv1 != CKR_OK) || (rv2 != CKR_OK)) {
+			dlg_listbox_add(ctrl, dlg, "<E: NO SLOTS FOUND!>");
+		    } else {
+			if(slot_count == 0) {
+			    dlg_listbox_add(ctrl, dlg, "<E: NO TOKEN FOUND!>");
+			}
+			for(i=0; i<slot_count; i++) {
+			    CK_TOKEN_INFO token_info;
+			    CK_SLOT_ID slot = 64;
+			    slot = slots[i];
+			    fl->C_GetTokenInfo(slot,&token_info);
+			    {
+				char buf[40];
+				int j;
+				memset(buf, 0, 40);
+				strncpy(buf, token_info.label, 30);
+				for(j=29;j>0;j--) {
+				    if(buf[j] == ' ') {
+					buf[j] = '\0';
+				    } else {
+					break;
+				    }
+				}
+				dlg_listbox_add(ctrl, dlg, buf);
+			    }
+			}
+		    }
+		    fl->C_Finalize(0);
+		}
+	    }
+	    FreeLibrary(hLib);
+	}
+	pkcs11_token_label = conf_get_str(conf, CONF_pkcs11_token_label);
+	dlg_editbox_set(ctrl, dlg, pkcs11_token_label);
+	dlg_update_done(ctrl, dlg);
+    } else if (event == EVENT_VALCHANGE) {
+	char *buf = dlg_editbox_get(ctrl, dlg);
+	if(strncmp(buf, "<E: ", 4) != 0){
+	    conf_set_str(conf, CONF_pkcs11_token_label, buf);
+	}
+	sfree(buf);
+    }
+    if(m_cert_dlg != NULL) {
+	sc_cert_handler(m_cert_ctrl, m_cert_dlg, data, EVENT_REFRESH);
+    }
+}
+
+void sc_keystring_handler(union control *ctrl, void *dlg, void *data, int event ) {
+    m_keystring_dlg = dlg;
+    m_keystring_ctrl = ctrl;
+}
+
+void sc_cert_handler(union control *ctrl, void *dlg, void *data, int event ) {
+    Conf *conf = (Conf *)data;
+    sc_lib *scl;
+    m_cert_dlg = dlg;
+    m_cert_ctrl = ctrl;
+
+    scl = sclib;
+    if(event == EVENT_REFRESH) {
+	char *pkcs11_cert_label;
+	char *pkcs11_token_label = conf_get_str(conf, CONF_pkcs11_token_label);
+	dlg_update_start(ctrl, dlg);
+	dlg_listbox_clear(ctrl, dlg);
+	    if(pkcs11_token_label == NULL ||
+		strlen(pkcs11_token_label) == 0) {
+		    dlg_listbox_add(ctrl, dlg, "<E: SELECT TOKEN FIRST!>");
+	    } else {
+		Filename *pkcs11_libfile;
+		if (scl == NULL) { sclib = scl = calloc(sizeof(sc_lib), 1); }
+		pkcs11_libfile = conf_get_filename(conf, CONF_pkcs11_libfile);
+		sc_init_library(NULL, 0, scl, pkcs11_libfile);
+		if(scl->m_fl) {
+		    CK_SESSION_HANDLE session = sc_get_session(NULL, 0, scl->m_fl, pkcs11_token_label);
+		    if(session) {
+			char msg[1024] = "";
+			sc_cert_list *pcl;
+			sc_cert_list *cl = sc_get_cert_list(scl, session, msg);
+			pcl = cl;
+			while(pcl != NULL) {
+			    char *p_buf;
+			    p_buf = calloc(1,pcl->cert_attr[0].ulValueLen+1);
+			    strncpy(p_buf, pcl->cert_attr[0].pValue, pcl->cert_attr[0].ulValueLen);
+			    dlg_listbox_add(ctrl, dlg, p_buf);
+			    free(p_buf);
+			    pcl = pcl->next;
+			}
+			sc_free_cert_list(cl);
+			//          sclib->m_fl->C_CloseSession(session);
+		    }
+		    //        sclib->m_fl->C_Finalize(0);
+		}
+	    }
+	    pkcs11_cert_label = conf_get_str(conf, CONF_pkcs11_cert_label);
+	    dlg_editbox_set(ctrl, dlg, pkcs11_cert_label);
+	    dlg_update_done(ctrl, dlg);
+    } else if (event == EVENT_VALCHANGE) {
+	char *token_label;
+	char *cert_label;
+	int blob_len;
+	char *algorithm; /* minor memory leak */
+	token_label = dlg_editbox_get(m_label_ctrl, dlg);
+	cert_label = dlg_editbox_get(ctrl, dlg);
+	if(strncmp(cert_label, "<E: ", 4) != 0) {
+	    conf_set_str(conf, CONF_pkcs11_cert_label, cert_label);
+	    sc_get_pub(NULL, 0, scl, token_label, cert_label, &algorithm, &blob_len);
+	    if (m_keystring_dlg != NULL && scl && scl->keystring != NULL) {
+		dlg_editbox_set(m_keystring_ctrl, m_keystring_dlg, scl->keystring);
+	    }
+	    if (sclib == NULL) {
+		dlg_editbox_set(m_keystring_ctrl, m_keystring_dlg, "no sclib");
+	    } else
+		if (((sc_lib*)sclib)->keystring == NULL) {
+		    dlg_editbox_set(m_keystring_ctrl, m_keystring_dlg, "no sclib keystring");
+		}
+	}
+	sfree(token_label);
+	sfree(cert_label);
+    }
+}
+
+void sc_dlg_stdfilesel_handler11(union control *ctrl, void *dlg, void *data, int event)
+{
+    int key = ctrl->fileselect.context.i;
+    Conf *conf = (Conf *)data;
+
+    if (event == EVENT_REFRESH) {
+	dlg_filesel_set(ctrl, dlg, conf_get_filename(conf, key));
+    } else if (event == EVENT_VALCHANGE) {
+	Filename *filename = dlg_filesel_get(ctrl, dlg);
+	conf_set_filename(conf, key, filename);
+        filename_free(filename);
+    }
+    if(sc_get_label_dialog() != NULL) {
+	sc_tokenlabel_handler(sc_get_label_ctrl(), sc_get_label_dialog(), data, EVENT_REFRESH);
+    }
+}
+#endif
+
+#ifdef DO_CAPI_AUTH
+struct capi_data {
+    union control *certstore_droplist, *certID_text, *cert_browse, *keystring_text;
+};
+
+void capi_certstore_handler(union control *ctrl, void *dlg, void *data, int event ) {
+    Conf *conf = (Conf *)data;
+    struct capi_data *capid = (struct capi_data *)ctrl->generic.context.p;
+    char *capi_certID = conf_get_str(conf, CONF_capi_certID);
+
+    if (event == EVENT_REFRESH) {
+	if (ctrl == capid->certstore_droplist) {
+	    dlg_update_start(ctrl, dlg);
+	    dlg_listbox_clear(ctrl, dlg);
+	    dlg_listbox_add(ctrl, dlg, "User\\MY (Personal Certificates)");
+	    dlg_listbox_add(ctrl, dlg, "System\\MY (Personal Certificates)");
+	    if ((capi_certID != NULL) && (strncmp(capi_certID, "System\\MY", 9) == 0))
+		dlg_listbox_select(ctrl, dlg, 1);
+	    else
+		dlg_listbox_select(ctrl, dlg, 0); /* *shrug* */
+	    dlg_update_done(ctrl, dlg);
+	}
+    }
+}
+
+void capi_certID_handler(union control *ctrl, void *dlg, void *data, int event ) {
+    Conf *conf = (Conf *)data;
+    struct capi_data *capid = (struct capi_data *)ctrl->generic.context.p;
+    char* tmpKeystring = NULL;
+    char *capi_certID = NULL;
+
+    if (event == EVENT_REFRESH) {
+	//char *tmp = conf_get_str(conf, CONF_capi_certID);
+	dlg_editbox_set(ctrl, dlg, conf_get_str(conf, CONF_capi_certID));
+    } else if (event == EVENT_VALCHANGE) {
+	sfree(capi_certID);
+	capi_certID = dlg_editbox_get(ctrl, dlg);
+    }
+
+    if ((capi_certID != NULL) && capi_certID[0]) {
+	if ((tmpKeystring = capi_get_key_string(capi_certID)) != NULL) {
+	    dlg_editbox_set(capid->keystring_text, dlg, tmpKeystring);
+	    free(tmpKeystring);
+	    tmpKeystring = NULL;
+	    conf_set_str(conf, CONF_capi_certID, capi_certID);
+	}
+	sfree(capi_certID);
+    }
+}
+
+typedef BOOL (WINAPI *PCertSelectCertificateA)(
+    __inout  PCERT_SELECT_STRUCT_A pCertSelectInfo
+    );
+
+void capi_certstore_browse_handler(union control *ctrl, void *dlg, void *data, int event ) {
+    Conf *conf = (Conf *)data;
+    struct capi_data *capid = (struct capi_data *)ctrl->generic.context.p;
+    HCERTSTORE hStore = NULL;
+    CERT_SELECT_STRUCT_A* css = NULL;
+    CERT_CONTEXT** acc = NULL;
+    unsigned int tmpSHA1size = 0, dwCertStoreUser;
+    unsigned char tmpSHA1[20];
+    char tmpSHA1hex[41] = "";
+    char tmpCertID[100] = "";
+    char* tmpKeystring = NULL;
+    HMODULE hCertDlgDLL = NULL;
+    PCertSelectCertificateA f_csca = NULL;
+    int i;
+
+    if (event == EVENT_ACTION) {
+	i = dlg_listbox_index(capid->certstore_droplist, dlg);
+	if (i < 0)
+	    goto cleanup;
+
+	if ((hCertDlgDLL = LoadLibrary("CryptDlg.dll")) == NULL)
+	    goto cleanup;
+	if ((f_csca = (PCertSelectCertificateA) GetProcAddress(hCertDlgDLL, "CertSelectCertificateA")) == NULL)
+	    goto cleanup;
+
+	dwCertStoreUser = CERT_SYSTEM_STORE_CURRENT_USER;
+	if (i == 1)
+	    dwCertStoreUser = CERT_SYSTEM_STORE_LOCAL_MACHINE;
+
+	if ((hStore = CertOpenStore(CERT_STORE_PROV_SYSTEM_A, PKCS_7_ASN_ENCODING | X509_ASN_ENCODING, 0 /*hCryptProv*/, dwCertStoreUser | CERT_STORE_READONLY_FLAG | CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_ENUM_ARCHIVED_FLAG, "MY")) == NULL)
+	    goto cleanup;
+
+	acc = (CERT_CONTEXT**) malloc(sizeof(CERT_CONTEXT*));
+	acc[0] = NULL;
+	css = (CERT_SELECT_STRUCT_A*) malloc(sizeof(CERT_SELECT_STRUCT_A));
+	memset(css, 0, sizeof(CERT_SELECT_STRUCT_A));
+	css->dwSize = sizeof(CERT_SELECT_STRUCT_A);
+	css->hwndParent = ((struct dlgparam *) dlg)->hwnd;
+	css->hInstance = NULL;
+	css->pTemplateName = NULL;
+	css->dwFlags = 0;
+	css->szTitle = "PuTTY: Select Certificate for CAPI Auth";
+	css->cCertStore = 1;
+	css->arrayCertStore = &hStore;
+	css->szPurposeOid = szOID_PKIX_KP_CLIENT_AUTH;
+	css->cCertContext = 1; // count of arrayCertContext indexes allocated
+	css->arrayCertContext = acc;
+
+	if (!f_csca(css)) // GetProcAddress(hCertDlgDLL, "CertSelectCertificateA")
+	    goto cleanup;
+
+	if (css->cCertContext != 1)
+	    goto cleanup;
+	if (acc[0] == NULL)
+	    goto cleanup;
+
+	tmpSHA1size = sizeof(tmpSHA1);
+	if (!CertGetCertificateContextProperty(acc[0], CERT_HASH_PROP_ID, tmpSHA1, &tmpSHA1size))
+	    memset(tmpSHA1, 0, sizeof(tmpSHA1));
+	_snprintf(tmpSHA1hex, sizeof(tmpSHA1hex)-1, "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X", tmpSHA1[0], tmpSHA1[1], tmpSHA1[2], tmpSHA1[3], tmpSHA1[4], tmpSHA1[5], tmpSHA1[6], tmpSHA1[7], tmpSHA1[8], tmpSHA1[9], tmpSHA1[10], tmpSHA1[11], tmpSHA1[12], tmpSHA1[13], tmpSHA1[14], tmpSHA1[15], tmpSHA1[16], tmpSHA1[17], tmpSHA1[18], tmpSHA1[19]);
+	tmpSHA1hex[sizeof(tmpSHA1hex)-1] = '\0';
+	_snprintf(tmpCertID, sizeof(tmpCertID)-1, "%s\\%s", i == 1 ? "Machine\\MY" : "User\\MY", tmpSHA1hex);
+	tmpCertID[sizeof(tmpCertID)-1] = '\0';
+	dlg_editbox_set(capid->certID_text, dlg, tmpCertID);
+
+	conf_set_str(conf, CONF_capi_certID, tmpCertID);
+
+	if ((tmpKeystring = capi_get_key_string(tmpCertID)) != NULL) {
+	    dlg_editbox_set(capid->keystring_text, dlg, tmpKeystring);
+	    free(tmpKeystring);
+	    tmpKeystring = NULL;
+	}
+    }
+cleanup:
+    if (hCertDlgDLL) {
+	FreeLibrary(hCertDlgDLL);
+	f_csca = NULL;
+	hCertDlgDLL = NULL;
+    }
+    if (acc) {
+	if (acc[0])
+	    CertFreeCertificateContext(acc[0]);
+	acc[0] = NULL;
+	free(acc);
+	acc = NULL;
+    }
+
+    if (css)
+	free(css);
+    css = NULL;
+
+    if (hStore)
+	CertCloseStore(hStore, 0);
+    hStore = NULL;
+
+    return;
+}
+#endif
 
 /* 
  * Helper function to load the session selected in the list box, if
@@ -1287,6 +1636,9 @@ void setup_config_box(struct controlbox *b, int midsession,
     struct portfwd_data *pfd;
     union control *c;
     char *str;
+#ifdef DO_CAPI_AUTH
+    struct capi_data *capid;
+#endif
 
     ssd = (struct sessionsaver_data *)
 	ctrl_alloc_with_free(b, sizeof(struct sessionsaver_data),
@@ -2225,6 +2577,84 @@ void setup_config_box(struct controlbox *b, int midsession,
 	}
 
 	if (!midsession) {
+#ifdef DO_PKCS11_AUTH
+	    /*
+	     * The Connection/SSH/Pkcs11 panel.
+	     */
+	    ctrl_settitle(b, "Connection/SSH/Pkcs11",
+		"Options controlling PKCS11 SSH authentication");
+
+	    s = ctrl_getset(b, "Connection/SSH/Pkcs11", "methods",
+		"Authentication methods");
+	    ctrl_checkbox(s, "Use Windows event log", NO_SHORTCUT,
+			HELPCTX(ssh_write_syslog),
+			conf_checkbox_handler,
+			I(CONF_try_write_syslog));
+	    ctrl_checkbox(s, "Attempt \"PKCS#11 smartcard\" auth (SSH-2)", NO_SHORTCUT,
+			HELPCTX(ssh_auth_pkcs11),
+			conf_checkbox_handler,
+			I(CONF_try_pkcs11_auth));
+
+	    s = ctrl_getset(b, "Connection/SSH/Pkcs11", "params",
+		"Authentication parameters");
+	    ctrl_filesel(s, "PKCS#11 library for authentication:", NO_SHORTCUT,
+			FALSE , FALSE, "Select PKCS#11 library file",
+			HELPCTX(ssh_auth_pkcs11_libfile),
+			sc_dlg_stdfilesel_handler11, I(CONF_pkcs11_libfile));
+	    m_label_ctrl = ctrl_combobox(s, "Token label:",
+			NO_SHORTCUT, 70, HELPCTX(ssh_auth_pkcs11_token_label),
+			sc_tokenlabel_handler, P(NULL), P(NULL));
+	    m_cert_ctrl = ctrl_combobox(s, "Certificate label:",
+			NO_SHORTCUT, 70, HELPCTX(ssh_auth_pkcs11_cert_label),
+			sc_cert_handler, P(NULL), P(NULL));
+	    m_keystring_ctrl = ctrl_editbox(s, "SSH keystring:",
+			NO_SHORTCUT, 100, HELPCTX(ssh_auth_pkcs11_cert_label),
+			sc_keystring_handler, P(NULL), P(NULL));
+#endif
+#ifdef DO_CAPI_AUTH
+	    /*
+	     * The Connection/SSH/CAPI panel.
+	     */
+	    ctrl_settitle(b, "Connection/SSH/CAPI",
+			"Options controlling MS CAPI SSH authentication");
+	    capid = (struct capi_data *) ctrl_alloc(b, sizeof(struct capi_data));
+	    s = ctrl_getset(b, "Connection/SSH/CAPI", "methods",
+			"Authentication methods");
+	    ctrl_checkbox(s, "Attempt \"CAPI Certificate\" (Key-only) auth (SSH-2)", NO_SHORTCUT,
+			HELPCTX(ssh_auth_capi),
+			conf_checkbox_handler,
+			I(CONF_try_capi_auth));
+	    s = ctrl_getset(b, "Connection/SSH/CAPI", "params",
+			"Authentication parameters");
+	    capid->certstore_droplist = ctrl_droplist(s, "Store:", NO_SHORTCUT, 85,
+			HELPCTX(ssh_auth_capi_certstore_label),
+			capi_certstore_handler, P(capid));
+
+	    ctrl_columns(s, 2, 75, 25);
+	    capid->certID_text =
+			ctrl_editbox(s, "Cert:", NO_SHORTCUT, 80,
+			HELPCTX(ssh_auth_capi_certstore_label),
+			capi_certID_handler, P(capid), P(NULL));
+	    capid->certID_text->generic.column = 0;
+	    capid->cert_browse = ctrl_pushbutton(s, "Browse", NO_SHORTCUT,
+			HELPCTX(ssh_auth_capi),
+			capi_certstore_browse_handler, P(capid));
+	    capid->cert_browse->generic.column = 1;
+	    capid->keystring_text = ctrl_editbox(s, "SSH keystring:",
+			NO_SHORTCUT, 100, HELPCTX(ssh_auth_capi),
+			conf_editbox_handler, P(NULL), P(NULL));
+	    /*		  m_label_ctrl = ctrl_combobox(s, "Certificate Store:",
+	    NO_SHORTCUT, 70, HELPCTX(ssh_auth_capi_certstore_label),
+	    capi_certstore_handler, P(NULL), P(NULL));
+	    m_cert_ctrl = ctrl_combobox(s, "Certificate fingerprint:",
+	    NO_SHORTCUT, 70, HELPCTX(ssh_auth_capi_certfingerprint_label),
+	    capi_certfingerprint_handler, P(NULL), P(NULL));
+	    m_keystring_ctrl = ctrl_editbox(s, "SSH keystring:",
+	    NO_SHORTCUT, 100, HELPCTX(ssh_auth_pkcs11_cert_label),
+	    capi_keystring_handler, P(NULL), P(NULL));
+	    */
+
+#endif
 
 	    /*
 	     * The Connection/SSH/Auth panel.

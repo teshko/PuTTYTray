@@ -6,6 +6,9 @@
 #include "network.h"
 #include "int64.h"
 #include "misc.h"
+#ifdef DO_PKCS11_AUTH
+#include "pkcs11.h"
+#endif
 
 struct ssh_channel;
 

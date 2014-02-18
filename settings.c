@@ -536,6 +536,17 @@ void save_open_settings(void *sesskey, Conf *conf)
     write_setting_filename(sesskey, "PublicKeyFile", conf_get_filename(conf, CONF_keyfile));
     write_setting_s(sesskey, "RemoteCommand", conf_get_str(conf, CONF_remote_cmd));
     write_setting_i(sesskey, "RFCEnviron", conf_get_int(conf, CONF_rfc_environ));
+#ifdef DO_PKCS11_AUTH
+    write_setting_i(sesskey, "WriteSyslog", conf_get_int(conf, CONF_try_write_syslog));
+    write_setting_i(sesskey, "AuthPKCS11", conf_get_int(conf, CONF_try_pkcs11_auth));
+    write_setting_filename(sesskey, "PKCS11LibFile", conf_get_filename(conf, CONF_pkcs11_libfile));
+    write_setting_s(sesskey, "PKCS11TokenLabel", conf_get_str(conf, CONF_pkcs11_token_label));
+    write_setting_s(sesskey, "PKCS11CertLabel", conf_get_str(conf, CONF_pkcs11_cert_label));
+#endif
+#ifdef DO_CAPI_AUTH
+    write_setting_i(sesskey, "AuthCAPI", conf_get_int(conf, CONF_try_capi_auth));
+    write_setting_s(sesskey, "CAPICertID", conf_get_str(conf, CONF_capi_certID));
+#endif
     write_setting_i(sesskey, "PassiveTelnet", conf_get_int(conf, CONF_passive_telnet));
     write_setting_i(sesskey, "BackspaceIsDelete", conf_get_int(conf, CONF_bksp_is_delete));
     write_setting_i(sesskey, "RXVTHomeEnd", conf_get_int(conf, CONF_rxvt_homeend));
@@ -855,6 +866,17 @@ void load_open_settings(void *sesskey, Conf *conf)
     gpps(sesskey, "RemoteCommand", "", conf, CONF_remote_cmd);
     gppi(sesskey, "RFCEnviron", 0, conf, CONF_rfc_environ);
     gppi(sesskey, "PassiveTelnet", 0, conf, CONF_passive_telnet);
+#ifdef DO_PKCS11_AUTH
+    gppi(sesskey, "WriteSyslog", 0, conf, CONF_try_write_syslog);
+    gppi(sesskey, "AuthPKCS11", 0, conf, CONF_try_pkcs11_auth);
+    gppfile(sesskey, "PKCS11LibFile", conf, CONF_pkcs11_libfile);
+    gpps(sesskey, "PKCS11TokenLabel", "", conf, CONF_pkcs11_token_label);
+    gpps(sesskey, "PKCS11CertLabel", "", conf, CONF_pkcs11_cert_label);
+#endif
+#ifdef DO_CAPI_AUTH
+    gppi(sesskey, "AuthCAPI", 0, conf, CONF_try_capi_auth);
+    gpps(sesskey, "CAPICertID", "", conf, CONF_capi_certID);
+#endif
     gppi(sesskey, "BackspaceIsDelete", 1, conf, CONF_bksp_is_delete);
     gppi(sesskey, "RXVTHomeEnd", 0, conf, CONF_rxvt_homeend);
     gppi(sesskey, "LinuxFunctionKeys", 0, conf, CONF_funky_type);

@@ -527,6 +527,7 @@ union control *ctrl_filesel(struct controlset *,char *label,char shortcut,
 			    char const *filter, int write, char *title,
 			    intorptr helpctx,
 			    handler_fn handler, intorptr context);
+
 union control *ctrl_fontsel(struct controlset *,char *label,char shortcut,
 			    intorptr helpctx,
 			    handler_fn handler, intorptr context);

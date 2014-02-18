@@ -170,6 +170,17 @@
 #define WINHELP_CTX_puttygen_pastekey "puttygen.pastekey:puttygen-pastekey"
 #define WINHELP_CTX_puttygen_load "puttygen.load:puttygen-load"
 #define WINHELP_CTX_puttygen_conversions "puttygen.conversions:puttygen-conversions"
+#ifdef DO_PKCS11_AUTH
+#define WINHELP_CTX_ssh_write_syslog "ssh.write.syslog"
+#define WINHELP_CTX_ssh_auth_pkcs11 "ssh.auth.pkcs11"
+#define WINHELP_CTX_ssh_auth_pkcs11_libfile "ssh.auth.pkcs11libfile"
+#define WINHELP_CTX_ssh_auth_pkcs11_token_label "ssh.auth.pkcs11tokenlabel"
+#define WINHELP_CTX_ssh_auth_pkcs11_cert_label "ssh.auth.pkcs11certlabel"
+#endif
+#ifdef DO_CAPI_AUTH
+#define WINHELP_CTX_ssh_auth_capi "ssh.auth.capi"
+#define WINHELP_CTX_ssh_auth_capi_certstore_label "ssh.auth.capicertstorelabel"
+#endif
 
 /* These are used in Windows-specific bits of the frontend.
  * We (ab)use "help context identifiers" (dwContextId) to identify them. */

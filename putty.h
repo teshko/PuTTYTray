@@ -420,6 +420,10 @@ struct keyvalwhere {
     int where;
 };
 
+#ifdef DO_PKCS11_AUTH
+void *sclib;	/* sc's owned struct */
+#endif
+
 #ifndef NO_GSSAPI
 extern const int ngsslibs;
 extern const char *const gsslibnames[]; /* for displaying in configuration */
@@ -727,6 +731,15 @@ void cleanup_exit(int);
     X(INT, NONE, ssh_no_shell) /* avoid running a shell */ \
     X(STR, NONE, ssh_nc_host) /* host to connect to in `nc' mode */ \
     X(INT, NONE, ssh_nc_port) /* port to connect to in `nc' mode */ \
+    /* Smart Card options */ \
+    X(INT, NONE, try_write_syslog) \
+    X(INT, NONE, try_pkcs11_auth) \
+    X(FILENAME, NONE, pkcs11_libfile) \
+    X(STR, NONE, pkcs11_token_label) \
+    X(STR, NONE, pkcs11_cert_label) \
+    /* CrytoAPI options */ \
+    X(INT, NONE, try_capi_auth) \
+    X(STR, NONE, capi_certID) \
     /* Telnet options */ \
     X(STR, NONE, termtype) \
     X(STR, NONE, termspeed) \

@@ -13,6 +13,7 @@
   <ItemGroup>
     <ClCompile Include="..\..\..\adb.c" />
     <ClCompile Include="..\..\..\be_all_s.c" />
+    <ClCompile Include="..\..\..\capi.c" />
     <ClCompile Include="..\..\..\cmdline.c" />
     <ClCompile Include="..\..\..\conf.c" />
     <ClCompile Include="..\..\..\config.c" />
@@ -30,6 +31,7 @@
     <ClCompile Include="..\..\..\proxy.c" />
     <ClCompile Include="..\..\..\raw.c" />
     <ClCompile Include="..\..\..\rlogin.c" />
+    <ClCompile Include="..\..\..\sc.c" />
     <ClCompile Include="..\..\..\sercfg.c" />
     <ClCompile Include="..\..\..\settings.c" />
     <ClCompile Include="..\..\..\ssh.c">
@@ -97,6 +99,7 @@
     <ClCompile Include="..\..\..\x11fwd.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\..\capi.h" />
     <ClInclude Include="..\..\..\charset\charset.h" />
     <ClInclude Include="..\..\..\dialog.h" />
     <ClInclude Include="..\..\..\int64.h" />
@@ -105,10 +108,12 @@
     <ClInclude Include="..\..\..\misc.h" />
     <ClInclude Include="..\..\..\network.h" />
     <ClInclude Include="..\..\..\pgssapi.h" />
+    <ClInclude Include="..\..\..\pkcs11.h" />
     <ClInclude Include="..\..\..\proxy.h" />
     <ClInclude Include="..\..\..\putty.h" />
     <ClInclude Include="..\..\..\puttymem.h" />
     <ClInclude Include="..\..\..\puttyps.h" />
+    <ClInclude Include="..\..\..\sc.h" />
     <ClInclude Include="..\..\..\ssh.h" />
     <ClInclude Include="..\..\..\sshgss.h" />
     <ClInclude Include="..\..\..\sshgssc.h" />
@@ -180,7 +185,7 @@
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;HAS_GSSAPI;SECURITY_WIN32;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_NO_WARNINGS=1;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;HAS_GSSAPI;SECURITY_WIN32;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_NO_WARNINGS=1;_DEBUG;_WINDOWS;DO_PKCS11_AUTH;DO_CAPI_AUTH;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>..\..\..\./;..\..\..\charset/;..\..\..\windows/;..\..\..\windows/re_lib/;..\..\..\unix/;..\..\..\macosx/</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -197,7 +202,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;HAS_GSSAPI;SECURITY_WIN32;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_NO_WARNINGS=1;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;HAS_GSSAPI;SECURITY_WIN32;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;_CRT_SECURE_NO_WARNINGS=1;NDEBUG;_WINDOWS;DO_PKCS11_AUTH;DO_CAPI_AUTH;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>..\..\..\./;..\..\..\charset/;..\..\..\windows/;..\..\..\windows/re_lib/;..\..\..\unix/;..\..\..\macosx/</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -207,6 +212,9 @@
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalDependencies>advapi32.lib;comctl32.lib;imm32.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <ResourceCompile>
+      <PreprocessorDefinitions>DO_PKCS11_AUTH;DO_CAPI_AUTH;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
