@@ -485,6 +485,8 @@ typedef BOOL (WINAPI *PCertSelectCertificateA)(
     __inout  PCERT_SELECT_STRUCT_A pCertSelectInfo
     );
 
+void save_filename(Filename *filename); /* forward reference */
+
 static void prompt_add_CAPIkey(HWND hwnd) {
     HCERTSTORE hStore = NULL;
     CERT_SELECT_STRUCT_A* css = NULL;
@@ -541,13 +543,15 @@ static void prompt_add_CAPIkey(HWND hwnd) {
     _snprintf(tmpSHA1hex, sizeof(tmpSHA1hex)-1, "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X", tmpSHA1[0], tmpSHA1[1], tmpSHA1[2], tmpSHA1[3], tmpSHA1[4], tmpSHA1[5], tmpSHA1[6], tmpSHA1[7], tmpSHA1[8], tmpSHA1[9], tmpSHA1[10], tmpSHA1[11], tmpSHA1[12], tmpSHA1[13], tmpSHA1[14], tmpSHA1[15], tmpSHA1[16], tmpSHA1[17], tmpSHA1[18], tmpSHA1[19]);
     tmpSHA1hex[sizeof(tmpSHA1hex)-1] = '\0';
 
-    _snprintf(tmpCertID, sizeof(tmpCertID)-1, "%s\\%s", i == 1 ? "Machine\\MY" : "User\\MY", tmpSHA1hex);
+    _snprintf(tmpCertID, sizeof(tmpCertID)-1, "CAPI:%s\\%s", i == 1 ? "Machine\\MY" : "User\\MY", tmpSHA1hex);
     tmpCertID[sizeof(tmpCertID)-1] = '\0';
 
-    if ((ckey = Create_CAPI_userkey(tmpCertID, acc[0])) == NULL)
+    if ((ckey = Create_CAPI_userkey(&tmpCertID[5], acc[0])) == NULL)
 	goto cleanup;
     if (add234(capikeys, ckey) != ckey)
 	Free_CAPI_userkey(ckey);
+    else
+	save_filename(filename_from_str(tmpCertID));
 
     keylist_update();
 
