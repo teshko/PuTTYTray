@@ -2079,9 +2079,15 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 
                     if (numSelected == 0 || selectedArray[itemNum] == rCount + i) {
                         if (102 == LOWORD(wParam)) {
+#ifdef DO_PKCS11_AUTH
+			    if (skey->data != ((sc_lib*)sclib)->rsakey) {
+#endif
 			    del234(ssh2keys, skey);
 			    skey->alg->freekey(skey->data);
 			    sfree(skey);
+#ifdef DO_PKCS11_AUTH
+			    }
+#endif
 			} else {
                             char *buf = openssh_to_pubkey(skey);
                             toCopy = srealloc(toCopy, strlen(toCopy) + strlen(buf) + 2);
@@ -2661,6 +2667,8 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     char **argv, **argstart;
 #ifdef DO_PKCS11_AUTH
     HKEY hkey;
+    pkcs11_token_label = NULL;
+    pkcs11_cert_label = NULL;
     sc_save_passphrase = NULL;
     sc_activate_pwd_cache = 0;
 #endif
@@ -2828,10 +2836,9 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	    HKEY sesskey;
 	    sprintf(kn, "%s\\%s", PUTTY_REGKEY, buf);
 	    if (ERROR_SUCCESS == RegOpenKey(HKEY_CURRENT_USER, kn, &sesskey)) {
-		Filename *pkcs11_libfile;
 		if ((pkcs11_cert_label = read_setting_s(sesskey, "PKCS11CertLabel")) != NULL) {
 		    if(strlen(pkcs11_cert_label) > 0) {
-			pkcs11_libfile = read_setting_filename(sesskey, "PKCS11LibFile");
+			Filename *pkcs11_libfile = read_setting_filename(sesskey, "PKCS11LibFile");
 			pkcs11_token_label = read_setting_s(sesskey, "PKCS11TokenLabel");
 			{
 			    sclib = calloc(sizeof(sc_lib), 1);
@@ -2848,12 +2855,9 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 				    sc_free_sclib(scl);
 				    sclib = NULL;
 				} else {
-				    struct RSAKey *rkey = snew(struct RSAKey);
 				    struct ssh2_userkey *newKey = snew(struct ssh2_userkey);
 
-				    rkey->exponent = scl->rsakey->exponent;
-				    rkey->modulus = scl->rsakey->modulus;
-				    newKey->data = rkey;
+				    newKey->data = scl->rsakey;
 				    newKey->comment = pkcs11_cert_label;
 				    newKey->alg = find_pubkey_alg("ssh-rsa");
 
@@ -2865,9 +2869,14 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 				    // todo support multiple keys
 				    // --------------------
 				}
+			    } else {
+				sfree(pkcs11_token_label);
+				pkcs11_token_label = NULL;
+				sfree(pkcs11_cert_label);
+				pkcs11_cert_label = NULL;
 			    }
 			}
-			RegCloseKey(sesskey);
+			sfree(pkcs11_libfile);
 		    }
 		}
 		RegCloseKey(sesskey);
@@ -2948,10 +2957,6 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
     if (keypath) filereq_free(keypath);
 
-#ifdef DO_PKCS11_AUTH
-    sfree(pkcs11_token_label);
-    sfree(pkcs11_cert_label);
-#endif
     cleanup_exit(msg.wParam);
     return msg.wParam;		       /* just in case optimiser complains */
 }
