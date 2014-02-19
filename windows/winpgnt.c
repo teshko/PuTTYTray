@@ -2060,9 +2060,17 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		for (i = cCount - 1; (itemNum >= 0) && (i >= 0); i--) {
 		    ckey = index234(capikeys, i);
 		    if (selectedArray[itemNum] == rCount + sCount + i) {
-			del234(capikeys, ckey);
-			Free_CAPI_userkey(ckey);
-			itemNum--; 
+			if (102 == LOWORD(wParam)) {
+			    del234(capikeys, ckey);
+			    Free_CAPI_userkey(ckey);
+			} else {
+			    char *buf = capi_get_key_string(ckey->certID);
+			    toCopy = srealloc(toCopy, strlen(toCopy) + strlen(buf) + 2);
+			    strcat(toCopy, buf);
+			    strcat(toCopy, "\n");
+			    sfree(buf);
+			}
+			itemNum--;
 		    }
 		}
 #endif
