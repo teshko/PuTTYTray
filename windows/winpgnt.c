@@ -155,6 +155,20 @@ static void forget_passphrases(void)
     }
 }
 
+static void center_window(HWND hwnd)
+{
+    RECT rs, rd;
+    HWND hw;
+
+    hw = GetDesktopWindow();
+    if (GetWindowRect(hw, &rs) && GetWindowRect(hwnd, &rd))
+	MoveWindow(hwnd,
+		    (rs.right + rs.left + rd.left - rd.right) / 2,
+		    (rs.bottom + rs.top + rd.top - rd.bottom) / 2,
+		    rd.right - rd.left, rd.bottom - rd.top, TRUE);
+    return;
+}
+
 /*
  * Dialog-box function for the Licence box.
  */
@@ -163,6 +177,7 @@ static int CALLBACK LicenceProc(HWND hwnd, UINT msg,
 {
     switch (msg) {
       case WM_INITDIALOG:
+	center_window(hwnd);
 	return 1;
       case WM_COMMAND:
 	switch (LOWORD(wParam)) {
@@ -187,6 +202,7 @@ static int CALLBACK AboutProc(HWND hwnd, UINT msg,
 {
     switch (msg) {
       case WM_INITDIALOG:
+	center_window(hwnd);
 	SetDlgItemText(hwnd, 100, ver);
 	return 1;
       case WM_COMMAND:
@@ -272,21 +288,7 @@ static int CALLBACK PassphraseProc(HWND hwnd, UINT msg,
     switch (msg) {
       case WM_INITDIALOG:
 	passphrase_box = hwnd;
-	/*
-	 * Centre the window.
-	 */
-	{			       /* centre the window */
-	    RECT rs, rd;
-	    HWND hw;
-
-	    hw = GetDesktopWindow();
-	    if (GetWindowRect(hw, &rs) && GetWindowRect(hwnd, &rd))
-		MoveWindow(hwnd,
-			   (rs.right + rs.left + rd.left - rd.right) / 2,
-			   (rs.bottom + rs.top + rd.top - rd.bottom) / 2,
-			   rd.right - rd.left, rd.bottom - rd.top, TRUE);
-	}
-
+	center_window(hwnd);
 	SetForegroundWindow(hwnd);
 	SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
 		     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
@@ -1584,21 +1586,7 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 
     switch (msg) {
       case WM_INITDIALOG:
-	/*
-	 * Centre the window.
-	 */
-	{			       /* centre the window */
-	    RECT rs, rd;
-	    HWND hw;
-
-	    hw = GetDesktopWindow();
-	    if (GetWindowRect(hw, &rs) && GetWindowRect(hwnd, &rd))
-		MoveWindow(hwnd,
-			   (rs.right + rs.left + rd.left - rd.right) / 2,
-			   (rs.bottom + rs.top + rd.top - rd.bottom) / 2,
-			   rd.right - rd.left, rd.bottom - rd.top, TRUE);
-	}
-
+	center_window(hwnd);
         if (has_help())
             SetWindowLongPtr(hwnd, GWL_EXSTYLE,
 			     GetWindowLongPtr(hwnd, GWL_EXSTYLE) |
