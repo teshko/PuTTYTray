@@ -75,6 +75,7 @@ static BOOL confirm_mode = FALSE;
 #define PAGEANT_REG       PUTTY_REGBASE "\\Pageant"
 #define PAGEANT_KEYS      "Keys"
 #define PAGEANT_REG_KEYS  PAGEANT_REG "\\" PAGEANT_KEYS
+#define PAGEANT_PERSIST   "SaveKeyFiles"
 #define PUTTY_DEFAULT     "Default%20Settings"
 static int initial_menuitems_count;
 
@@ -106,7 +107,19 @@ static void unmungestr(char *in, char *out, int outlen)
     return;
 }
 
-static tree234 *rsakeys, *ssh2keys;
+enum keytype {
+    RSAKEY,
+    SSH2USERKEY
+};
+
+typedef struct key_wrapper_st {
+    void* key;
+    enum keytype type;
+    Filename *file;
+} key_wrapper;
+
+static tree234 *keys;
+BOOL saves_keys_status;
 
 static int has_security;
 #ifndef NO_SECURITY
@@ -252,12 +265,35 @@ BOOL reg_keys(HKEY *hkey) {
     return ERROR_SUCCESS == RegOpenKeyEx(HKEY_CURRENT_USER, PAGEANT_REG_KEYS, 0, KEY_READ, hkey);
 }
 
-BOOL saves_keys() {
+__inline BOOL saves_keys() {
+    return saves_keys_status;
+}
+
+__inline void toggle_saves_keys() {
+    saves_keys_status = !saves_keys_status;
+}
+
+void load_saves_keys() {
     HKEY hkey;
-    BOOL res = reg_keys(&hkey);
-    if (res)
-        RegCloseKey(hkey);
-    return res;
+    if (ERROR_SUCCESS == RegOpenKeyEx(HKEY_CURRENT_USER, PAGEANT_REG, 0, KEY_READ, &hkey)) {
+	saves_keys_status = ERROR_SUCCESS == RegGetValue(hkey, NULL, PAGEANT_PERSIST, RRF_RT_ANY, NULL, NULL, NULL);
+    } else
+	saves_keys_status = FALSE;
+}
+
+void update_saves_keys() {
+    HKEY hkey;
+    if (saves_keys_status) {
+	if (ERROR_SUCCESS == RegOpenKey(HKEY_CURRENT_USER, PAGEANT_REG, &hkey)) {
+	    RegSetValueEx(hkey, PAGEANT_PERSIST, 0, REG_NONE, NULL, 0);
+	    RegCloseKey(hkey);
+	}
+    }
+    else
+	if (ERROR_SUCCESS == RegOpenKey(HKEY_CURRENT_USER, PAGEANT_REG, &hkey)) {
+	    RegDeleteValue(hkey, PAGEANT_PERSIST);
+	    RegCloseKey(hkey);
+	}
 }
 
 void toggle_startup() {
@@ -326,25 +362,19 @@ static int CALLBACK PassphraseProc(HWND hwnd, UINT msg,
     return 0;
 }
 
-static void update_saves_keys()
-{
-    BOOL there_are_no_keys = 0 == count234(ssh2keys) && 0 == count234(rsakeys);
-    EnableMenuItem(systray_menu, IDM_SAVE_KEYS,
-        saves_keys() || there_are_no_keys ? MF_ENABLED : MF_GRAYED);
-}
-
 /*
  * Update the visible key list.
  */
 static void keylist_update(void)
 {
-    struct RSAKey *rkey;
-    struct ssh2_userkey *skey;
+    key_wrapper *key;
     int i;
 
     if (keylist) {
 	SendDlgItemMessage(keylist, 100, LB_RESETCONTENT, 0, 0);
-	for (i = 0; NULL != (rkey = index234(rsakeys, i)); i++) {
+	for (i = 0; NULL != (key = index234(keys, i)); i++)
+	if (key->type == RSAKEY) {
+	    struct RSAKey *rkey = key->key;
 	    char listentry[512], *p;
 	    /*
 	     * Replace two spaces in the fingerprint with tabs, for
@@ -362,7 +392,8 @@ static void keylist_update(void)
 	    SendDlgItemMessage(keylist, 100, LB_ADDSTRING,
 			       0, (LPARAM) listentry);
 	}
-	for (i = 0; NULL != (skey = index234(ssh2keys, i)); i++) {
+	else if (key->type == SSH2USERKEY) {
+	    struct ssh2_userkey *skey = key->key;
 	    char *listentry, *p;
 	    int fp_len;
 	    /*
@@ -387,8 +418,6 @@ static void keylist_update(void)
 	}
 	SendDlgItemMessage(keylist, 100, LB_SETCURSEL, (WPARAM) - 1, 0);
     }
-
-    update_saves_keys();
 }
 
 BOOL reg_create(HKEY *hkey) {
@@ -397,7 +426,7 @@ BOOL reg_create(HKEY *hkey) {
 
 void save_filename(Filename *filename) {
     HKEY hkey;
-    if (reg_create(&hkey)) {
+    if (saves_keys() && reg_create(&hkey)) {
         RegSetValueEx(hkey, filename_to_str(filename), 0, REG_NONE, NULL, 0);
         RegCloseKey(hkey);
     }
@@ -405,7 +434,7 @@ void save_filename(Filename *filename) {
 
 void remove_filename(Filename *filename) {
     HKEY hkey;
-    if (reg_create(&hkey)) {
+    if (saves_keys() && (filename != NULL) && reg_create(&hkey)) {
         RegDeleteValue(hkey, filename_to_str(filename));
         RegCloseKey(hkey);
     }
@@ -673,8 +702,15 @@ static char *add_keyfile_ret(Filename *filename)
 	    sfree(request);
 	    sfree(response);
 	} else {
-	    if (add234(rsakeys, rkey) != rkey)
+	    key_wrapper *key = snew(key_wrapper);
+	    key->type = RSAKEY;
+	    key->file = filename_copy(filename);
+	    key->key = rkey;
+	    if (add234(keys, key) != key) {
 		sfree(rkey);	       /* already present, don't waste RAM */
+		sfree(key->file);
+		sfree(key);
+	    }
 	}
     } else {
 	if (already_running) {
@@ -720,9 +756,15 @@ static char *add_keyfile_ret(Filename *filename)
 	    sfree(request);
 	    sfree(response);
 	} else {
-	    if (add234(ssh2keys, skey) != skey) {
+	    key_wrapper *key = snew(key_wrapper);
+	    key->type = SSH2USERKEY;
+	    key->file = filename_copy(filename);
+	    key->key = skey;
+	    if (add234(keys, key) != key) {
 		skey->alg->freekey(skey->data);
 		sfree(skey);	       /* already present, don't waste RAM */
+		sfree(key->file);
+		sfree(key);
 	    }
 	}
     }
@@ -746,6 +788,7 @@ static void add_keyfile(Filename *filename) {
 static void load_registry_keys() {
     HKEY hkey;
     int i = 0;
+    load_saves_keys();
     if (ERROR_SUCCESS == RegCreateKey(HKEY_CURRENT_USER, PAGEANT_REG_KEYS, &hkey)) {
         DWORD namelen = MAX_PATH;
         char name[MAX_PATH];
@@ -755,7 +798,7 @@ static void load_registry_keys() {
             char *extmsg;
             namelen = MAX_PATH;
             if (!msg) {
-                sfree(filename);
+		filename_free(filename);
                 continue;
             }
 
@@ -768,12 +811,14 @@ static void load_registry_keys() {
                 remove_filename(filename);
             } break;
             case IDCANCEL:
-                sfree(filename);
+		sfree(extmsg);
+		filename_free(filename);
                 return;
             default:
                 break;
             }
-            sfree(filename);
+	    sfree(extmsg);
+	    filename_free(filename);
         }
     }
 }
@@ -785,7 +830,7 @@ static void load_registry_keys() {
 static void *make_keylist1(int *length)
 {
     int i, nkeys, len;
-    struct RSAKey *key;
+    key_wrapper *key;
     unsigned char *blob, *p, *ret;
     int bloblen;
 
@@ -794,12 +839,13 @@ static void *make_keylist1(int *length)
      */
     len = 4;
     nkeys = 0;
-    for (i = 0; NULL != (key = index234(rsakeys, i)); i++) {
+    for (i = 0; NULL != (key = index234(keys, i)); i++) 
+    if (key->type == RSAKEY) {
 	nkeys++;
-	blob = rsa_public_blob(key, &bloblen);
+	blob = rsa_public_blob(key->key, &bloblen);
 	len += bloblen;
 	sfree(blob);
-	len += 4 + strlen(key->comment);
+	len += 4 + strlen(((struct RSAKey*)key->key)->comment);
     }
 
     /* Allocate the buffer. */
@@ -808,14 +854,16 @@ static void *make_keylist1(int *length)
 
     PUT_32BIT(p, nkeys);
     p += 4;
-    for (i = 0; NULL != (key = index234(rsakeys, i)); i++) {
-	blob = rsa_public_blob(key, &bloblen);
+    for (i = 0; NULL != (key = index234(keys, i)); i++)
+    if (key->type == RSAKEY) {
+	char *comment = ((struct RSAKey*)key->key)->comment;
+	blob = rsa_public_blob(key->key, &bloblen);
 	memcpy(p, blob, bloblen);
 	p += bloblen;
 	sfree(blob);
-	PUT_32BIT(p, strlen(key->comment));
-	memcpy(p + 4, key->comment, strlen(key->comment));
-	p += 4 + strlen(key->comment);
+	PUT_32BIT(p, strlen(comment));
+	memcpy(p + 4, comment, strlen(comment));
+	p += 4 + strlen(comment);
     }
 
     assert(p - ret == len);
@@ -829,6 +877,7 @@ static void *make_keylist1(int *length)
 static void *make_keylist2(int *length)
 {
     struct ssh2_userkey *key;
+    key_wrapper *fkey;
     int i, len, nkeys;
     unsigned char *blob, *p, *ret;
     int bloblen;
@@ -838,7 +887,9 @@ static void *make_keylist2(int *length)
      */
     len = 4;
     nkeys = 0;
-    for (i = 0; NULL != (key = index234(ssh2keys, i)); i++) {
+    for (i = 0; NULL != (fkey = index234(keys, i)); i++)
+    if (fkey->type == SSH2USERKEY) {
+	key = fkey->key;
 	nkeys++;
 	len += 4;	       /* length field */
 	blob = key->alg->public_blob(key->data, &bloblen);
@@ -857,7 +908,9 @@ static void *make_keylist2(int *length)
      */
     PUT_32BIT(p, nkeys);
     p += 4;
-    for (i = 0; NULL != (key = index234(ssh2keys, i)); i++) {
+    for (i = 0; NULL != (fkey = index234(keys, i)); i++)
+    if (fkey->type == SSH2USERKEY) {
+	key = fkey->key;
 	blob = key->alg->public_blob(key->data, &bloblen);
 	PUT_32BIT(p, bloblen);
 	p += 4;
@@ -1015,7 +1068,8 @@ static void answer_msg(void *msg)
 	 * or not.
 	 */
 	{
-	    struct RSAKey reqkey, *key;
+	    struct RSAKey reqkey;
+	    key_wrapper *key;
 	    Bignum challenge, response;
 	    unsigned char response_source[48], response_md5[16];
 	    struct MD5Context md5c;
@@ -1049,13 +1103,13 @@ static void answer_msg(void *msg)
 	    p += 16;
 	    if (msgend < p+4 ||
 		GET_32BIT(p) != 1 ||
-		(key = find234(rsakeys, &reqkey, NULL)) == NULL) {
+		(key = find234(keys, &reqkey, NULL)) == NULL) {
 		freebn(reqkey.exponent);
 		freebn(reqkey.modulus);
 		freebn(challenge);
 		goto failure;
 	    }
-	    response = rsadecrypt(challenge, key);
+	    response = rsadecrypt(challenge, key->key);
 	    for (i = 0; i < 32; i++)
 		response_source[i] = bignum_byte(response, 31 - i);
 
@@ -1086,6 +1140,7 @@ static void answer_msg(void *msg)
 	 */
 	{
 	    struct ssh2_userkey *key;
+	    key_wrapper *fkey;
 	    struct blob b;
 	    unsigned char *data, *signature;
 	    int datalen, siglen, len;
@@ -1106,9 +1161,10 @@ static void answer_msg(void *msg)
 	    if (datalen < 0 || datalen > msgend - p)
 		goto failure;
 	    data = p;
-	    key = find234(ssh2keys, &b, cmpkeys_ssh2_asymm);
-	    if (!key)
+	    fkey = find234(keys, &b, cmpkeys_ssh2_asymm);
+	    if (!fkey)
 		goto failure;
+	    key = fkey->key;
             strcpy(buf, "Allow use of key: ");
             strncat(buf, key->comment, MAX_PATH);
             strncat(buf, "?", MAX_PATH);
@@ -1203,12 +1259,20 @@ static void answer_msg(void *msg)
 	    }
 	    PUT_32BIT(ret, 1);
 	    ret[4] = SSH_AGENT_FAILURE;
-	    if (add234(rsakeys, key) == key) {
-		keylist_update();
-		ret[4] = SSH_AGENT_SUCCESS;
-	    } else {
-		freersakey(key);
-		sfree(key);
+	    {
+		key_wrapper *fkey = malloc(sizeof(key_wrapper));
+		fkey->file = NULL;
+		fkey->type = RSAKEY;
+		fkey->key = key;
+		if (add234(keys, fkey) == fkey) {
+		    keylist_update();
+		    ret[4] = SSH_AGENT_SUCCESS;
+		}
+		else {
+		    freersakey(key);
+		    sfree(key);
+		    sfree(fkey);
+		}
 	    }
 	}
 	break;
@@ -1279,13 +1343,21 @@ static void answer_msg(void *msg)
 
 	    PUT_32BIT(ret, 1);
 	    ret[4] = SSH_AGENT_FAILURE;
-	    if (add234(ssh2keys, key) == key) {
-		keylist_update();
-		ret[4] = SSH_AGENT_SUCCESS;
-	    } else {
-		key->alg->freekey(key->data);
-		sfree(key->comment);
-		sfree(key);
+	    {
+		key_wrapper *fkey = malloc(sizeof(key_wrapper));
+		fkey->file = NULL;
+		fkey->type = RSAKEY;
+		fkey->key = key;
+		if (add234(keys, fkey) == fkey) {
+		    keylist_update();
+		    ret[4] = SSH_AGENT_SUCCESS;
+		}
+		else {
+		    key->alg->freekey(key->data);
+		    sfree(key->comment);
+		    sfree(key);
+		    sfree(fkey);
+		}
 	    }
 	}
 	break;
@@ -1296,22 +1368,27 @@ static void answer_msg(void *msg)
 	 * start with.
 	 */
 	{
-	    struct RSAKey reqkey, *key;
+	    struct RSAKey rkey;
+	    key_wrapper *key, reqkey;
 	    int n;
 
-	    n = makekey(p, msgend - p, &reqkey, NULL, 0);
+	    n = makekey(p, msgend - p, &rkey, NULL, 0);
 	    if (n < 0)
 		goto failure;
 
-	    key = find234(rsakeys, &reqkey, NULL);
-	    freebn(reqkey.exponent);
-	    freebn(reqkey.modulus);
+	    reqkey.file = NULL;
+	    reqkey.key = &rkey;
+	    reqkey.type = RSAKEY;
+	    key = find234(keys, &reqkey, NULL);
+	    freebn(rkey.exponent);
+	    freebn(rkey.modulus);
 	    PUT_32BIT(ret, 1);
 	    ret[4] = SSH_AGENT_FAILURE;
 	    if (key) {
-		del234(rsakeys, key);
+		del234(keys, key);
 		keylist_update();
-		freersakey(key);
+		freersakey(key->key);
+		filename_free(key->file);
 		sfree(key);
 		ret[4] = SSH_AGENT_SUCCESS;
 	    }
@@ -1324,7 +1401,7 @@ static void answer_msg(void *msg)
 	 * start with.
 	 */
 	{
-	    struct ssh2_userkey *key;
+	    key_wrapper *key;
 	    struct blob b;
 
 	    if (msgend < p+4)
@@ -1337,16 +1414,19 @@ static void answer_msg(void *msg)
 	    b.blob = p;
 	    p += b.len;
 
-	    key = find234(ssh2keys, &b, cmpkeys_ssh2_asymm);
+	    key = find234(keys, &b, cmpkeys_ssh2_asymm);
 	    if (!key)
 		goto failure;
 
 	    PUT_32BIT(ret, 1);
 	    ret[4] = SSH_AGENT_FAILURE;
 	    if (key) {
-		del234(ssh2keys, key);
+		struct ssh2_userkey *skey = key->key;
+		del234(keys, key);
 		keylist_update();
-		key->alg->freekey(key->data);
+		skey->alg->freekey(skey->data);
+		sfree(skey);
+		filename_free(key->file);
 		sfree(key);
 		ret[4] = SSH_AGENT_SUCCESS;
 	    }
@@ -1357,12 +1437,14 @@ static void answer_msg(void *msg)
 	 * Remove all SSH-1 keys. Always returns success.
 	 */
 	{
-	    struct RSAKey *rkey;
+	    key_wrapper *key;
 
-	    while ((rkey = index234(rsakeys, 0)) != NULL) {
-		del234(rsakeys, rkey);
-		freersakey(rkey);
-		sfree(rkey);
+	    while ((key = index234(keys, 0)) != NULL)
+	    if (key->type == RSAKEY) {
+		del234(keys, key);
+		freersakey(key->key);
+		filename_free(key->file);
+		sfree(key);
 	    }
 	    keylist_update();
 
@@ -1375,12 +1457,17 @@ static void answer_msg(void *msg)
 	 * Remove all SSH-2 keys. Always returns success.
 	 */
 	{
-	    struct ssh2_userkey *skey;
+	    key_wrapper *key;
 
-	    while ((skey = index234(ssh2keys, 0)) != NULL) {
-		del234(ssh2keys, skey);
+	    while ((key = index234(keys, 0)) != NULL)
+	    if (key->type == RSAKEY) {
+		struct ssh2_userkey *skey = key->key;
+		del234(keys, key);
+		keylist_update();
 		skey->alg->freekey(skey->data);
 		sfree(skey);
+		filename_free(key->file);
+		sfree(key);
 	    }
 	    keylist_update();
 
@@ -1478,6 +1565,18 @@ static int cmpkeys_ssh2(void *av, void *bv)
     return c;
 }
 
+static int cmpkeys(void *av, void *bv)
+{
+    key_wrapper *a = av;
+    key_wrapper *b = bv;
+    if (a->type != b->type)
+	return (a->type > b->type)? 1: -1;
+    if (a->type == SSH2USERKEY)
+	return cmpkeys_ssh2(a->key, b->key);
+    else //if (a->type == RSAKEY)
+	return cmpkeys_rsa(a->key, b->key);
+}
+
 /*
  * Key comparison function for looking up a blob in the 2-3-4 tree
  * of SSH-2 keys.
@@ -1485,11 +1584,15 @@ static int cmpkeys_ssh2(void *av, void *bv)
 static int cmpkeys_ssh2_asymm(void *av, void *bv)
 {
     struct blob *a = (struct blob *) av;
-    struct ssh2_userkey *b = (struct ssh2_userkey *) bv;
+    key_wrapper *p = bv;
+    struct ssh2_userkey *b = p->key;
     int i;
     int alen, blen;
     unsigned char *ablob, *bblob;
     int c;
+
+    if (p->type != SSH2USERKEY)
+	return (SSH2USERKEY > p->type) ? 1 : -1;
 
     /*
      * Compare purely by public blob.
@@ -1543,7 +1646,7 @@ static void prompt_add_keyfile(void)
 	    /* Only one filename returned? */
             Filename *fn = filename_from_str(filelist);
 	    add_keyfile(fn);
-            filename_free(fn);
+	    filename_free(fn);
         } else {
 	    /* we are returned a bunch of strings, end to
 	     * end. first string is the directory, the
@@ -1556,7 +1659,7 @@ static void prompt_add_keyfile(void)
 		char *filename = dupcat(dir, "\\", filewalker, NULL);
                 Filename *fn = filename_from_str(filename);
 		add_keyfile(fn);
-                filename_free(fn);
+		filename_free(fn);
 		sfree(filename);
 		filewalker += strlen(filewalker) + 1;
 	    }
@@ -1581,8 +1684,7 @@ static int file_exists(const char *path) {
 static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 				WPARAM wParam, LPARAM lParam)
 {
-    struct RSAKey *rkey;
-    struct ssh2_userkey *skey;
+    key_wrapper *key;
 
     switch (msg) {
       case WM_INITDIALOG:
@@ -1629,7 +1731,7 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 	    if (HIWORD(wParam) == BN_CLICKED ||
 		HIWORD(wParam) == BN_DOUBLECLICKED) {
 		int i;
-		int rCount, sCount;
+		int Count;
 		int *selectedArray;
                 char *toCopy = _strdup("");
 
@@ -1652,47 +1754,41 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 				numSelected, (WPARAM)selectedArray);
 		
 		itemNum = numSelected - 1;
-		rCount = count234(rsakeys);
-		sCount = count234(ssh2keys);
+		Count = count234(keys);
 		
 		/* go through the non-rsakeys until we've covered them all, 
 		 * and/or we're out of selected items to check. note that
 		 * we go *backwards*, to avoid complications from deleting
 		 * things hence altering the offset of subsequent items
 		 */
-	        for (i = sCount - 1; (itemNum >= 0 || numSelected == 0) && (i >= 0); i--) {
-		    skey = index234(ssh2keys, i);
+	        for (i = Count - 1; (itemNum >= 0 || numSelected == 0) && (i >= 0); i--) {
+		    key = index234(keys, i);
 
-                    if (numSelected == 0 || selectedArray[itemNum] == rCount + i) {
-                        if (102 == LOWORD(wParam)) {
-			    del234(ssh2keys, skey);
-			    skey->alg->freekey(skey->data);
-			    sfree(skey);
-			} else {
-                            char *buf = openssh_to_pubkey(skey);
-                            toCopy = srealloc(toCopy, strlen(toCopy) + strlen(buf) + 2);
-                            strcat(toCopy, buf);
-                            strcat(toCopy, "\n");
-                            sfree(buf);
+                    if (numSelected == 0 || selectedArray[itemNum] == i) {
+			if (102 == LOWORD(wParam)) {
+			    del234(keys, key);
+			    if (key->type == SSH2USERKEY) {
+				struct ssh2_userkey *skey = key->key;
+				skey->alg->freekey(skey->data);
+				sfree(skey);
+			    }
+			    else // if (key->type == RSAKEY)
+				freersakey(key->key);
+			    remove_filename(key->file);
+			    filename_free(key->file);
+			    free(key);
+			}
+			else if (key->type == SSH2USERKEY) {
+			    char *buf = openssh_to_pubkey(key->key);
+			    toCopy = srealloc(toCopy, strlen(toCopy) + strlen(buf) + 2);
+			    strcat(toCopy, buf);
+			    strcat(toCopy, "\n");
+			    sfree(buf);
                         }
                         itemNum--;
                     }
 		}
 		
-		/* do the same for the rsa keys */
-		for (i = rCount - 1; (itemNum >= 0) && (i >= 0); i--) {
-		    rkey = index234(rsakeys, i);
-
-                    if(selectedArray[itemNum] == i) {
-                        if (102 == LOWORD(wParam)) {
-			    del234(rsakeys, rkey);
-			    freersakey(rkey);
-			    sfree(rkey);
-			    itemNum--;
-                        }
-		    }
-		}
-
                 if (108 == LOWORD(wParam)) {
                     const size_t len = strlen(toCopy) + 1;
                     HGLOBAL hMem =  GlobalAlloc(GMEM_MOVEABLE, len);
@@ -1732,8 +1828,8 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
                     WaitForSingleObject(ShExecInfo.hProcess, INFINITE);
                     CloseHandle(ShExecInfo.hProcess);
                 }
-                add_keyfile(path);
-                sfree(path);
+		add_keyfile(path);
+		filename_free(path);
                 keylist_update();
             }
             return 0;
@@ -2023,19 +2119,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
             break;
           case IDM_SAVE_KEYS:
             {
-                HKEY hkey;
-                if (reg_keys(&hkey)) {
-                    HKEY parent;
-                    RegOpenKey(HKEY_CURRENT_USER, PAGEANT_REG, &parent);
-                    RegDeleteKey(parent, PAGEANT_KEYS);
-                    RegCloseKey(parent);
-                } else {
-                    reg_create(&hkey);
-                }
-                RegCloseKey(hkey);
+		toggle_saves_keys();
                 CheckMenuItem(systray_menu, IDM_SAVE_KEYS,
                     saves_keys() ? MF_CHECKED : MF_UNCHECKED);
-                update_saves_keys();
             }
             break;
 	  default:
@@ -2263,8 +2349,7 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
      * Initialise storage for RSA keys.
      */
     if (!already_running) {
-	rsakeys = newtree234(cmpkeys_rsa);
-	ssh2keys = newtree234(cmpkeys_ssh2);
+	keys = newtree234(cmpkeys);
     }
 
     /*
@@ -2298,7 +2383,7 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	} else {
             Filename *fn = filename_from_str(argv[i]);
 	    add_keyfile(fn);
-            filename_free(fn);
+	    filename_free(fn);
 	    added_keys = TRUE;
 	}
     }
@@ -2383,10 +2468,10 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         IDM_CONFIRM_KEY_USAGE, "&Confirm key usage");
     AppendMenu(systray_menu, MF_ENABLED
         | (starts_at_startup() ? MF_CHECKED : MF_UNCHECKED),
-        IDM_START_AT_STARTUP, "&Start with Windows");
+        IDM_START_AT_STARTUP, "Start with &Windows");
     AppendMenu(systray_menu, MF_ENABLED
         | (saves_keys() ? MF_CHECKED : MF_UNCHECKED),
-        IDM_SAVE_KEYS, "&Persist keys");
+        IDM_SAVE_KEYS, "K&eep Changes");
     AppendMenu(systray_menu, MF_ENABLED, IDM_ABOUT, "&About");
     AppendMenu(systray_menu, MF_SEPARATOR, 0, 0);
     AppendMenu(systray_menu, MF_ENABLED, IDM_CLOSE, "E&xit");
@@ -2424,6 +2509,7 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	DestroyMenu(systray_menu);
     }
 
+    update_saves_keys();
     if (keypath) filereq_free(keypath);
 
     cleanup_exit(msg.wParam);
