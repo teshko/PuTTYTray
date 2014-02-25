@@ -64,6 +64,9 @@
 #define IDM_SAVED_MAX 0x5000
 #define MENU_SAVED_STEP 16
 
+#define IDM_URL_MIN 0x5001
+#define IDM_URL_MAX 0x5100
+
 /* Maximum number of sessions on saved-session submenu */
 #define MENU_SAVED_MAX ((IDM_SAVED_MAX-IDM_SAVED_MIN) / MENU_SAVED_STEP)
 
@@ -143,7 +146,7 @@ static int kbd_codepage;
 
 static void *ldisc;
 static Backend *back;
-static void *backhandle;
+static void *backhandle = NULL;
 
 static struct unicode_data ucsdata;
 static int must_close_session, session_closed;
@@ -168,12 +171,18 @@ static struct {
 } popup_menus[2];
 enum { SYSMENU, CTXMENU };
 static HMENU savedsess_menu;
+static HMENU url_menu;
 
 Conf *conf;			       /* exported to windlg.c */
 
 static void conf_cache_data(void);
 int cursor_type;
 int vtmode;
+
+static unsigned int update_url_id;
+static unsigned int search_url_id;
+static unsigned int url_target_id;
+static BOOL url_character_used[UCHAR_MAX];
 
 static struct sesslist sesslist;       /* for saved-session menu */
 
@@ -301,8 +310,8 @@ char *get_ttymode(void *frontend, const char *mode)
 static void start_backend(void)
 {
     const char *error;
-    char msg[1024], *title;
-    char *realhost;
+    char msg[1024] = {0}, *title = NULL;
+    char *realhost = NULL;
     int i;
 
     /*
@@ -325,6 +334,14 @@ static void start_backend(void)
 		       conf_get_int(conf, CONF_tcp_nodelay),
 		       conf_get_int(conf, CONF_tcp_keepalives));
     back->provide_logctx(backhandle, logctx);
+
+    // there used to be an exit(error) here.  It is gone.
+    // The rest of this code is run just so we can reach
+    // connection_fatal and hope that nothing is too broken.
+    // Hack some things that aren't happy.  Why, why.
+    if (!realhost)
+        realhost = _strdup("");
+
     window_name = icon_name = NULL;
     title = conf_get_str(conf, CONF_wintitle);
     if (!*title) {
@@ -913,6 +930,7 @@ int putty_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	AppendMenu(popup_menus[CTXMENU].menu, MF_ENABLED, IDM_PASTE, "&Paste");
 
 	savedsess_menu = CreateMenu();
+        url_menu = CreateMenu();
 
 	get_sesslist(&sesslist, TRUE);
 	update_savedsess_menu();
@@ -936,6 +954,8 @@ int putty_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	    AppendMenu(m, (conf_get_int(conf, CONF_resize_action)
 			   == RESIZE_DISABLED) ? MF_GRAYED : MF_ENABLED,
 		       IDM_FULLSCREEN, "&Full Screen");
+
+            AppendMenu(m, MF_POPUP | MF_ENABLED, (UINT) url_menu, "&Urls");
 
             if (conf_get_int(conf, CONF_alwaysontop)) {
                 AppendMenu(m, MF_ENABLED | MF_CHECKED, IDM_VISIBLE, "Alwa&ys on top");
@@ -1145,6 +1165,58 @@ static void update_savedsess_menu(void)
 		   sesslist.sessions[i]);
     if (sesslist.nsessions <= 1)
 	AppendMenu(savedsess_menu, MF_GRAYED, IDM_SAVED_MIN, "(No sessions)");
+}
+
+void append_url_to_menu(Terminal *term, void *menu, wchar_t * data, int *attr, int len, int must_deselect) {
+    unsigned int i = 0;
+    BOOL found = FALSE;
+    wchar_t *fixed, *fixing, *search;
+    if (update_url_id > (IDM_URL_MAX-IDM_URL_MIN))
+        return;
+    fixing = fixed = snewn(wcslen(data) + MAX_PATH, wchar_t);
+    search = data;
+
+    if (search[strlen("http:/")] == '/')
+        for (i = 0; i < strlen("http:/"); ++i)
+            *fixing++ = *search++;
+
+    while (*search && i++ < MAX_PATH) {
+        if (!found && *search < 'z' && !url_character_used[*search]) {
+            url_character_used[*search] = TRUE;
+            found = TRUE;
+            *fixing++ = '&';
+        }
+        if (*search == '&')
+            *fixing++ = '&';
+        *fixing++ = *search++;
+    }
+
+    *fixing++ = 0;
+
+    AppendMenuW(url_menu, MF_ENABLED, IDM_URL_MIN + (update_url_id), *fixed ? fixed : data);
+    ++update_url_id;
+    sfree(fixed);
+}
+
+void urlhack_for_every_link(void (*output)(Terminal *, void *, wchar_t *, int *, int, int));
+
+static void update_url_menu() {
+    int i;
+    while (DeleteMenu(url_menu, 0, MF_BYPOSITION))
+        ;
+
+    update_url_id = 0;
+    for (i = 0; i < UCHAR_MAX; ++i)
+        url_character_used[i] = FALSE;
+    url_character_used['/'] = TRUE;
+    url_character_used['.'] = TRUE;
+
+    urlhack_for_every_link(&append_url_to_menu);
+}
+
+void url_menu_find_and_launch(Terminal *term, void *menu, wchar_t * data, int *attr, int len, int must_deselect) {
+    if (search_url_id++ == url_target_id)
+        urlhack_launch_url_helper(term, menu, data, attr, len, must_deselect);
 }
 
 /*
@@ -2315,7 +2387,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 	    get_sesslist(&sesslist, TRUE);
 	    update_savedsess_menu();
 	    return 0;
-	}
+	} else if ((HMENU)wParam == url_menu) {
+            update_url_menu();
+            return 0;
+        }
 	break;
       case WM_COMMAND:
       case WM_SYSCOMMAND:
@@ -2720,7 +2795,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 	    if (wParam >= IDM_SAVED_MIN && wParam < IDM_SAVED_MAX) {
 		SendMessage(hwnd, WM_SYSCOMMAND, IDM_SAVEDSESS, wParam);
 	    }
-	    if (wParam >= IDM_SPECIAL_MIN && wParam <= IDM_SPECIAL_MAX) {
+            if (wParam >= IDM_SPECIAL_MIN && wParam <= IDM_SPECIAL_MAX) {
 		int i = (wParam - IDM_SPECIAL_MIN) / 0x10;
 		/*
 		 * Ensure we haven't been sent a bogus SYSCOMMAND
@@ -2733,6 +2808,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 		    back->special(backhandle, specials[i].code);
 		net_pending_errors();
 	    }
+            if (wParam >= IDM_URL_MIN && wParam < (IDM_URL_MIN+update_url_id)) {
+                url_target_id = wParam - IDM_URL_MIN;
+                search_url_id = 0;
+                urlhack_for_every_link(&url_menu_find_and_launch);
+            }
 	}
 	break;
 
