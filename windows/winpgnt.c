@@ -60,6 +60,7 @@
 #define IDM_START_AT_STARTUP 0x0080
 #define IDM_CONFIRM_KEY_USAGE 0x0090
 #define IDM_SAVE_KEYS 0x00A0
+#define IDM_ADDCAPI  0x00B0
 
 #define APPNAME "Pageant"
 
@@ -2456,6 +2457,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 	    }
 	    prompt_add_keyfile();
 	    break;
+#ifdef DO_CAPI_AUTH
+	  case IDM_ADDCAPI:
+	      prompt_add_CAPIkey(GetDesktopWindow());
+	      break;
+#endif
           case IDM_CONFIRM_KEY_USAGE:
             confirm_mode = !confirm_mode;
             CheckMenuItem(systray_menu, IDM_CONFIRM_KEY_USAGE,
@@ -2906,6 +2912,9 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     AppendMenu(systray_menu, MF_ENABLED, IDM_VIEWKEYS,
 	   "&View Keys");
     AppendMenu(systray_menu, MF_ENABLED, IDM_ADDKEY, "Add &Key");
+#ifdef DO_CAPI_AUTH
+    AppendMenu(systray_menu, MF_ENABLED, IDM_ADDCAPI, "Add Capi Cert");
+#endif
     AppendMenu(systray_menu, MF_SEPARATOR, 0, 0);
     if (has_help())
 	AppendMenu(systray_menu, MF_ENABLED, IDM_HELP, "&Help");
