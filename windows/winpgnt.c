@@ -486,32 +486,36 @@ typedef BOOL (WINAPI *PCertSelectCertificateA)(
     __inout  PCERT_SELECT_STRUCT_A pCertSelectInfo
     );
 
-void save_filename(Filename *filename); /* forward reference */
+static void add_keyfile(Filename *filename); /* Forward reference */
 
 static void prompt_add_CAPIkey(HWND hwnd) {
     HCERTSTORE hStore = NULL;
     CERT_SELECT_STRUCT_A* css = NULL;
     CERT_CONTEXT** acc = NULL;
-    unsigned int tmpSHA1size = 0, dwCertStoreUser;
+    unsigned int j, tmpSHA1size = 0, dwCertStoreUser;
     unsigned char tmpSHA1[20];
-    char tmpSHA1hex[41] = "";
-    char tmpCertID[100] = "";
-    char* tmpCertID_alloced = NULL;
+    char *p, tmpCertID[57];
+    Filename *certFile;
     HMODULE hCertDlgDLL = NULL;
     PCertSelectCertificateA f_csca = NULL;
-    int i = 0; // TODO: Let the user choose this
+    int i = 0; /* TODO: Let the user choose this */
     struct CAPI_userkey* ckey = NULL;
 
     if ((hCertDlgDLL = LoadLibrary("CryptDlg.dll")) == NULL)
 	goto cleanup;
-    if ((f_csca = (PCertSelectCertificateA) GetProcAddress(hCertDlgDLL, "CertSelectCertificateA")) == NULL)
+    if ((f_csca = (PCertSelectCertificateA) GetProcAddress(hCertDlgDLL,
+	"CertSelectCertificateA")) == NULL)
 	goto cleanup;
 
     dwCertStoreUser = CERT_SYSTEM_STORE_CURRENT_USER;
     if (i == 1)
 	dwCertStoreUser = CERT_SYSTEM_STORE_LOCAL_MACHINE;
 
-    if ((hStore = CertOpenStore(CERT_STORE_PROV_SYSTEM_A, PKCS_7_ASN_ENCODING | X509_ASN_ENCODING, 0 /*hCryptProv*/, dwCertStoreUser | CERT_STORE_READONLY_FLAG | CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_ENUM_ARCHIVED_FLAG, "MY")) == NULL)
+    if ((hStore = CertOpenStore(CERT_STORE_PROV_SYSTEM_A,
+	PKCS_7_ASN_ENCODING | X509_ASN_ENCODING, 0 /*hCryptProv*/,
+	dwCertStoreUser | CERT_STORE_READONLY_FLAG |
+	CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_ENUM_ARCHIVED_FLAG,
+	"MY")) == NULL)
 	goto cleanup;
 
     acc = (CERT_CONTEXT**) malloc(sizeof(CERT_CONTEXT*));
@@ -527,10 +531,10 @@ static void prompt_add_CAPIkey(HWND hwnd) {
     css->cCertStore = 1;
     css->arrayCertStore = &hStore;
     css->szPurposeOid = szOID_PKIX_KP_CLIENT_AUTH;
-    css->cCertContext = 1; // count of arrayCertContext indexes allocated
+    css->cCertContext = 1; /* count of arrayCertContext indexes allocated */
     css->arrayCertContext = acc;
 
-    if (!f_csca(css)) // GetProcAddress(hCertDlgDLL, "CertSelectCertificateA")
+    if (!f_csca(css)) /* GetProcAddress(hCertDlgDLL, "CertSelectCertificateA") */
 	goto cleanup;
 
     if (css->cCertContext != 1)
@@ -538,22 +542,28 @@ static void prompt_add_CAPIkey(HWND hwnd) {
     if (acc[0] == NULL)
 	goto cleanup;
 
+    _snprintf(tmpCertID, sizeof(tmpCertID)-1,
+	"CAPI:%s\\0000000000000000000000000000000000000000",
+	i == 1 ? "Machine\\MY" : "User\\MY");
+
+    p = tmpCertID + 5 + (i == 1 ? 10 : 8);
     tmpSHA1size = sizeof(tmpSHA1);
-    if (!CertGetCertificateContextProperty(acc[0], CERT_HASH_PROP_ID, tmpSHA1, &tmpSHA1size))
-	memset(tmpSHA1, 0, sizeof(tmpSHA1));
-    _snprintf(tmpSHA1hex, sizeof(tmpSHA1hex)-1, "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X", tmpSHA1[0], tmpSHA1[1], tmpSHA1[2], tmpSHA1[3], tmpSHA1[4], tmpSHA1[5], tmpSHA1[6], tmpSHA1[7], tmpSHA1[8], tmpSHA1[9], tmpSHA1[10], tmpSHA1[11], tmpSHA1[12], tmpSHA1[13], tmpSHA1[14], tmpSHA1[15], tmpSHA1[16], tmpSHA1[17], tmpSHA1[18], tmpSHA1[19]);
-    tmpSHA1hex[sizeof(tmpSHA1hex)-1] = '\0';
 
-    _snprintf(tmpCertID, sizeof(tmpCertID)-1, "CAPI:%s\\%s", i == 1 ? "Machine\\MY" : "User\\MY", tmpSHA1hex);
-    tmpCertID[sizeof(tmpCertID)-1] = '\0';
+    if (CertGetCertificateContextProperty(acc[0], CERT_HASH_PROP_ID, tmpSHA1, &tmpSHA1size))
+	for (j = 0; j < tmpSHA1size; j++) {
+	    unsigned char k = (tmpSHA1[j] & 240) >> 4;
+	    if (k > 9) *p = 'a' - 10 + k;
+	    else *p = '0' + k;
+	    p++;
+	    k = tmpSHA1[j] & 15;
+	    if (k > 9) *p = 'a' - 10 + k;
+	    else *p = '0' + k;
+	    p++;
+	}
 
-    if ((ckey = Create_CAPI_userkey(&tmpCertID[5], acc[0])) == NULL)
-	goto cleanup;
-    if (add234(capikeys, ckey) != ckey)
-	Free_CAPI_userkey(ckey);
-    else
-	save_filename(filename_from_str(tmpCertID));
-
+    certFile = filename_from_str(tmpCertID);
+    add_keyfile(certFile);
+    sfree(certFile);
     keylist_update();
 
 cleanup:
@@ -581,7 +591,10 @@ cleanup:
     return;
 }
 
-// Key comparison function for the 2-3-4 tree of CAPI keys (struct CAPI_userkey).
+/*
+ * Key comparison function for the 2-3-4 tree
+ * of CAPI keys (struct CAPI_userkey).
+ */
 int cmpkeys_capi(void *av, void *bv) {
     struct CAPI_userkey *a, *b;
     a = (struct CAPI_userkey *) av;
@@ -589,14 +602,17 @@ int cmpkeys_capi(void *av, void *bv) {
     return strcmp(a->certID, b->certID);
 }
 
-// Key comparison function for the 2-3-4 tree of CAPI keys (struct CAPI_userkey) where the first argument is a blob.
+/*
+ * Key comparison function for the 2-3-4 tree of CAPI keys
+ * (struct CAPI_userkey) where the first argument is a blob.
+ */
 static int cmpkeys_capi_blob(void *av, void *bv) {
     struct blob *a = (struct blob *) av;
     struct CAPI_userkey *b = (struct CAPI_userkey *) bv;
     int i;
     int c;
 
-    // Compare purely by public blob.
+    /* Compare purely by public blob. */
     c = 0;
     for (i = 0; i < a->len && i < b->bloblen; i++) {
 	if (a->blob[i] < b->blob[i]) {
@@ -2058,9 +2074,9 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		 * things hence altering the offset of subsequent items
 		 */
 #ifdef DO_CAPI_AUTH
-		for (i = cCount - 1; (itemNum >= 0) && (i >= 0); i--) {
+		for (i = cCount - 1; (itemNum >= 0 || numSelected == 0) && (i >= 0); i--) {
 		    ckey = index234(capikeys, i);
-		    if (selectedArray[itemNum] == rCount + sCount + i) {
+		    if (numSelected == 0 || selectedArray[itemNum] == rCount + sCount + i) {
 			if (102 == LOWORD(wParam)) {
 			    del234(capikeys, ckey);
 			    Free_CAPI_userkey(ckey);
