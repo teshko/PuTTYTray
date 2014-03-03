@@ -118,6 +118,9 @@ typedef struct key_wrapper_st {
     Filename *file;
 } key_wrapper;
 
+#define RSA(x) ((struct RSAKey*)x->key)
+#define SSH2(x) ((struct ssh2_userkey*)x->key)
+
 static tree234 *keys;
 BOOL saves_keys_status;
 
@@ -374,7 +377,6 @@ static void keylist_update(void)
 	SendDlgItemMessage(keylist, 100, LB_RESETCONTENT, 0, 0);
 	for (i = 0; NULL != (key = index234(keys, i)); i++)
 	if (key->type == RSAKEY) {
-	    struct RSAKey *rkey = key->key;
 	    char listentry[512], *p;
 	    /*
 	     * Replace two spaces in the fingerprint with tabs, for
@@ -382,7 +384,7 @@ static void keylist_update(void)
 	     */
 	    strcpy(listentry, "ssh1\t");
 	    p = listentry + strlen(listentry);
-	    rsa_fingerprint(p, sizeof(listentry) - (p - listentry), rkey);
+	    rsa_fingerprint(p, sizeof(listentry) - (p - listentry), RSA(key));
 	    p = strchr(listentry, ' ');
 	    if (p)
 		*p = '\t';
@@ -393,15 +395,14 @@ static void keylist_update(void)
 			       0, (LPARAM) listentry);
 	}
 	else if (key->type == SSH2USERKEY) {
-	    struct ssh2_userkey *skey = key->key;
 	    char *listentry, *p;
 	    int fp_len;
 	    /*
 	     * Replace two spaces in the fingerprint with tabs, for
 	     * nice alignment in the box.
 	     */
-	    p = skey->alg->fingerprint(skey->data);
-            listentry = dupprintf("%s\t%s", p, skey->comment);
+	    p = SSH2(key)->alg->fingerprint(SSH2(key)->data);
+            listentry = dupprintf("%s\t%s", p, SSH2(key)->comment);
             fp_len = strlen(listentry);
             sfree(p);
 
@@ -506,7 +507,7 @@ static char *add_keyfile_ret(Filename *filename)
 	    /* For our purposes we want the blob prefixed with its length */
 	    blob2 = snewn(bloblen+4, unsigned char);
 	    PUT_32BIT(blob2, bloblen);
-	    memcpy(blob2 + 4, blob, bloblen);
+	    memcpy(blob2 + 4, blob, bloblen);  // WHY ARE WE DOING THIS, ANYWAY SHULDN'T WE INCREASE bloblen by 4
 	    sfree(blob);
 	    blob = blob2;
 
@@ -842,10 +843,10 @@ static void *make_keylist1(int *length)
     for (i = 0; NULL != (key = index234(keys, i)); i++) 
     if (key->type == RSAKEY) {
 	nkeys++;
-	blob = rsa_public_blob(key->key, &bloblen);
+	blob = rsa_public_blob(RSA(key), &bloblen);
 	len += bloblen;
 	sfree(blob);
-	len += 4 + strlen(((struct RSAKey*)key->key)->comment);
+	len += 4 + strlen(RSA(key)->comment);
     }
 
     /* Allocate the buffer. */
@@ -856,8 +857,8 @@ static void *make_keylist1(int *length)
     p += 4;
     for (i = 0; NULL != (key = index234(keys, i)); i++)
     if (key->type == RSAKEY) {
-	char *comment = ((struct RSAKey*)key->key)->comment;
-	blob = rsa_public_blob(key->key, &bloblen);
+	char *comment = RSA(key)->comment;
+	blob = rsa_public_blob(RSA(key), &bloblen);
 	memcpy(p, blob, bloblen);
 	p += bloblen;
 	sfree(blob);
@@ -876,8 +877,7 @@ static void *make_keylist1(int *length)
  */
 static void *make_keylist2(int *length)
 {
-    struct ssh2_userkey *key;
-    key_wrapper *fkey;
+    key_wrapper *key;
     int i, len, nkeys;
     unsigned char *blob, *p, *ret;
     int bloblen;
@@ -887,15 +887,14 @@ static void *make_keylist2(int *length)
      */
     len = 4;
     nkeys = 0;
-    for (i = 0; NULL != (fkey = index234(keys, i)); i++)
-    if (fkey->type == SSH2USERKEY) {
-	key = fkey->key;
+    for (i = 0; NULL != (key = index234(keys, i)); i++)
+    if (key->type == SSH2USERKEY) {
 	nkeys++;
 	len += 4;	       /* length field */
-	blob = key->alg->public_blob(key->data, &bloblen);
+	blob = SSH2(key)->alg->public_blob(SSH2(key)->data, &bloblen);
 	len += bloblen;
 	sfree(blob);
-	len += 4 + strlen(key->comment);
+	len += 4 + strlen(SSH2(key)->comment);
     }
 
     /* Allocate the buffer. */
@@ -908,18 +907,17 @@ static void *make_keylist2(int *length)
      */
     PUT_32BIT(p, nkeys);
     p += 4;
-    for (i = 0; NULL != (fkey = index234(keys, i)); i++)
-    if (fkey->type == SSH2USERKEY) {
-	key = fkey->key;
-	blob = key->alg->public_blob(key->data, &bloblen);
+    for (i = 0; NULL != (key = index234(keys, i)); i++)
+    if (key->type == SSH2USERKEY) {
+	blob = SSH2(key)->alg->public_blob(SSH2(key)->data, &bloblen);
 	PUT_32BIT(p, bloblen);
 	p += 4;
 	memcpy(p, blob, bloblen);
 	p += bloblen;
 	sfree(blob);
-	PUT_32BIT(p, strlen(key->comment));
-	memcpy(p + 4, key->comment, strlen(key->comment));
-	p += 4 + strlen(key->comment);
+	PUT_32BIT(p, strlen(SSH2(key)->comment));
+	memcpy(p + 4, SSH2(key)->comment, strlen(SSH2(key)->comment));
+	p += 4 + strlen(SSH2(key)->comment);
     }
 
     assert(p - ret == len);
@@ -1069,7 +1067,7 @@ static void answer_msg(void *msg)
 	 */
 	{
 	    struct RSAKey reqkey;
-	    key_wrapper *key;
+	    key_wrapper tmpkey, *key;
 	    Bignum challenge, response;
 	    unsigned char response_source[48], response_md5[16];
 	    struct MD5Context md5c;
@@ -1101,15 +1099,20 @@ static void answer_msg(void *msg)
 	    }
 	    memcpy(response_source + 32, p, 16);
 	    p += 16;
+
+	    tmpkey.file = NULL;
+	    tmpkey.key = &reqkey;
+	    tmpkey.type = RSAKEY;
+
 	    if (msgend < p+4 ||
 		GET_32BIT(p) != 1 ||
-		(key = find234(keys, &reqkey, NULL)) == NULL) {
+		(key = find234(keys, &tmpkey, NULL)) == NULL) {
 		freebn(reqkey.exponent);
 		freebn(reqkey.modulus);
 		freebn(challenge);
 		goto failure;
 	    }
-	    response = rsadecrypt(challenge, key->key);
+	    response = rsadecrypt(challenge, RSA(key));
 	    for (i = 0; i < 32; i++)
 		response_source[i] = bignum_byte(response, 31 - i);
 
@@ -1139,8 +1142,7 @@ static void answer_msg(void *msg)
 	 * or not.
 	 */
 	{
-	    struct ssh2_userkey *key;
-	    key_wrapper *fkey;
+	    key_wrapper *key;
 	    struct blob b;
 	    unsigned char *data, *signature;
 	    int datalen, siglen, len;
@@ -1161,16 +1163,15 @@ static void answer_msg(void *msg)
 	    if (datalen < 0 || datalen > msgend - p)
 		goto failure;
 	    data = p;
-	    fkey = find234(keys, &b, cmpkeys_ssh2_asymm);
-	    if (!fkey)
+	    key = find234(keys, &b, cmpkeys_ssh2_asymm);
+	    if (!key)
 		goto failure;
-	    key = fkey->key;
             strcpy(buf, "Allow use of key: ");
-            strncat(buf, key->comment, MAX_PATH);
+            strncat(buf, SSH2(key)->comment, MAX_PATH);
             strncat(buf, "?", MAX_PATH);
             // Presumably this is in response to user action, so SYSTEMMODAL (toppmost) seems reasonable
             if (!confirm_mode || IDYES == MessageBox(NULL, buf, APPNAME, MB_SYSTEMMODAL | MB_YESNO | MB_ICONQUESTION)) {
-                signature = key->alg->sign(key->data, data, datalen, &siglen);
+                signature = SSH2(key)->alg->sign(SSH2(key)->data, data, datalen, &siglen);
             } else {
                 // There's no protocol for returning "no I won't sign this";
                 // errors cause the client to abort the connection, this seems like a better fallback
@@ -1191,63 +1192,63 @@ static void answer_msg(void *msg)
 	 * SSH_AGENT_FAILURE if the key was malformed.
 	 */
 	{
-	    struct RSAKey *key;
+	    struct RSAKey *rkey;
 	    char *comment;
             int n, commentlen;
 
-	    key = snew(struct RSAKey);
-	    memset(key, 0, sizeof(struct RSAKey));
+	    rkey = snew(struct RSAKey);
+	    memset(rkey, 0, sizeof(struct RSAKey));
 
-	    n = makekey(p, msgend - p, key, NULL, 1);
+	    n = makekey(p, msgend - p, rkey, NULL, 1);
 	    if (n < 0) {
-		freersakey(key);
-		sfree(key);
+		freersakey(rkey);
+		sfree(rkey);
 		goto failure;
 	    }
 	    p += n;
 
-	    n = makeprivate(p, msgend - p, key);
+	    n = makeprivate(p, msgend - p, rkey);
 	    if (n < 0) {
-		freersakey(key);
-		sfree(key);
+		freersakey(rkey);
+		sfree(rkey);
 		goto failure;
 	    }
 	    p += n;
 
-	    n = ssh1_read_bignum(p, msgend - p, &key->iqmp);  /* p^-1 mod q */
+	    n = ssh1_read_bignum(p, msgend - p, &rkey->iqmp);  /* p^-1 mod q */
 	    if (n < 0) {
-		freersakey(key);
-		sfree(key);
+		freersakey(rkey);
+		sfree(rkey);
 		goto failure;
 	    }
 	    p += n;
 
-	    n = ssh1_read_bignum(p, msgend - p, &key->p);  /* p */
+	    n = ssh1_read_bignum(p, msgend - p, &rkey->p);  /* p */
 	    if (n < 0) {
-		freersakey(key);
-		sfree(key);
+		freersakey(rkey);
+		sfree(rkey);
 		goto failure;
 	    }
 	    p += n;
 
-	    n = ssh1_read_bignum(p, msgend - p, &key->q);  /* q */
+	    n = ssh1_read_bignum(p, msgend - p, &rkey->q);  /* q */
 	    if (n < 0) {
-		freersakey(key);
-		sfree(key);
+		freersakey(rkey);
+		sfree(rkey);
 		goto failure;
 	    }
 	    p += n;
 
 	    if (msgend < p+4) {
-		freersakey(key);
-		sfree(key);
+		freersakey(rkey);
+		sfree(rkey);
 		goto failure;
 	    }
             commentlen = toint(GET_32BIT(p));
 
 	    if (commentlen < 0 || commentlen > msgend - p) {
-		freersakey(key);
-		sfree(key);
+		freersakey(rkey);
+		sfree(rkey);
 		goto failure;
 	    }
 
@@ -1255,23 +1256,23 @@ static void answer_msg(void *msg)
 	    if (comment) {
 		memcpy(comment, p + 4, commentlen);
                 comment[commentlen] = '\0';
-		key->comment = comment;
+		rkey->comment = comment;
 	    }
 	    PUT_32BIT(ret, 1);
 	    ret[4] = SSH_AGENT_FAILURE;
 	    {
-		key_wrapper *fkey = malloc(sizeof(key_wrapper));
-		fkey->file = NULL;
-		fkey->type = RSAKEY;
-		fkey->key = key;
-		if (add234(keys, fkey) == fkey) {
+		key_wrapper *key = snew(key_wrapper);
+		key->file = NULL;
+		key->type = RSAKEY;
+		key->key = rkey;
+		if (add234(keys, key) == key) {
 		    keylist_update();
 		    ret[4] = SSH_AGENT_SUCCESS;
 		}
 		else {
-		    freersakey(key);
+		    freersakey(rkey);
+		    sfree(rkey);
 		    sfree(key);
-		    sfree(fkey);
 		}
 	    }
 	}
@@ -1282,7 +1283,7 @@ static void answer_msg(void *msg)
 	 * SSH_AGENT_FAILURE if the key was malformed.
 	 */
 	{
-	    struct ssh2_userkey *key;
+	    struct ssh2_userkey *skey;
 	    char *comment, *alg;
 	    int alglen, commlen;
 	    int bloblen;
@@ -1297,21 +1298,21 @@ static void answer_msg(void *msg)
 	    alg = p;
 	    p += alglen;
 
-	    key = snew(struct ssh2_userkey);
+	    skey = snew(struct ssh2_userkey);
 	    /* Add further algorithm names here. */
 	    if (alglen == 7 && !memcmp(alg, "ssh-rsa", 7))
-		key->alg = &ssh_rsa;
+		skey->alg = &ssh_rsa;
 	    else if (alglen == 7 && !memcmp(alg, "ssh-dss", 7))
-		key->alg = &ssh_dss;
+		skey->alg = &ssh_dss;
 	    else {
-		sfree(key);
+		sfree(skey);
 		goto failure;
 	    }
 
 	    bloblen = msgend - p;
-	    key->data = key->alg->openssh_createkey(&p, &bloblen);
-	    if (!key->data) {
-		sfree(key);
+	    skey->data = skey->alg->openssh_createkey(&p, &bloblen);
+	    if (!skey->data) {
+		sfree(skey);
 		goto failure;
 	    }
 
@@ -1322,16 +1323,16 @@ static void answer_msg(void *msg)
 	    assert(p <= msgend);
 
 	    if (msgend < p+4) {
-		key->alg->freekey(key->data);
-		sfree(key);
+		skey->alg->freekey(skey->data);
+		sfree(skey);
 		goto failure;
 	    }
 	    commlen = toint(GET_32BIT(p));
 	    p += 4;
 
 	    if (commlen < 0 || commlen > msgend - p) {
-		key->alg->freekey(key->data);
-		sfree(key);
+		skey->alg->freekey(skey->data);
+		sfree(skey);
 		goto failure;
 	    }
 	    comment = snewn(commlen + 1, char);
@@ -1339,24 +1340,24 @@ static void answer_msg(void *msg)
 		memcpy(comment, p, commlen);
 		comment[commlen] = '\0';
 	    }
-	    key->comment = comment;
+	    skey->comment = comment;
 
 	    PUT_32BIT(ret, 1);
 	    ret[4] = SSH_AGENT_FAILURE;
 	    {
-		key_wrapper *fkey = malloc(sizeof(key_wrapper));
-		fkey->file = NULL;
-		fkey->type = RSAKEY;
-		fkey->key = key;
-		if (add234(keys, fkey) == fkey) {
+		key_wrapper *key = snew(key_wrapper);
+		key->file = NULL;
+		key->type = SSH2USERKEY;
+		key->key = skey;
+		if (add234(keys, key) == key) {
 		    keylist_update();
 		    ret[4] = SSH_AGENT_SUCCESS;
 		}
 		else {
-		    key->alg->freekey(key->data);
-		    sfree(key->comment);
+		    skey->alg->freekey(skey->data);
+		    sfree(skey->comment);
+		    sfree(skey);
 		    sfree(key);
-		    sfree(fkey);
 		}
 	    }
 	}
@@ -1387,7 +1388,7 @@ static void answer_msg(void *msg)
 	    if (key) {
 		del234(keys, key);
 		keylist_update();
-		freersakey(key->key);
+		freersakey(RSA(key));
 		filename_free(key->file);
 		sfree(key);
 		ret[4] = SSH_AGENT_SUCCESS;
@@ -1421,11 +1422,10 @@ static void answer_msg(void *msg)
 	    PUT_32BIT(ret, 1);
 	    ret[4] = SSH_AGENT_FAILURE;
 	    if (key) {
-		struct ssh2_userkey *skey = key->key;
 		del234(keys, key);
 		keylist_update();
-		skey->alg->freekey(skey->data);
-		sfree(skey);
+		SSH2(key)->alg->freekey(SSH2(key)->data);
+		sfree(SSH2(key));
 		filename_free(key->file);
 		sfree(key);
 		ret[4] = SSH_AGENT_SUCCESS;
@@ -1442,7 +1442,7 @@ static void answer_msg(void *msg)
 	    while ((key = index234(keys, 0)) != NULL)
 	    if (key->type == RSAKEY) {
 		del234(keys, key);
-		freersakey(key->key);
+		freersakey(RSA(key));
 		filename_free(key->file);
 		sfree(key);
 	    }
@@ -1461,11 +1461,10 @@ static void answer_msg(void *msg)
 
 	    while ((key = index234(keys, 0)) != NULL)
 	    if (key->type == RSAKEY) {
-		struct ssh2_userkey *skey = key->key;
 		del234(keys, key);
 		keylist_update();
-		skey->alg->freekey(skey->data);
-		sfree(skey);
+		SSH2(key)->alg->freekey(SSH2(key)->data);
+		sfree(SSH2(key));
 		filename_free(key->file);
 		sfree(key);
 	    }
@@ -1768,18 +1767,17 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 			if (102 == LOWORD(wParam)) {
 			    del234(keys, key);
 			    if (key->type == SSH2USERKEY) {
-				struct ssh2_userkey *skey = key->key;
-				skey->alg->freekey(skey->data);
-				sfree(skey);
+				SSH2(key)->alg->freekey(SSH2(key)->data);
+				sfree(SSH2(key));
 			    }
 			    else // if (key->type == RSAKEY)
-				freersakey(key->key);
+				freersakey(RSA(key));
 			    remove_filename(key->file);
 			    filename_free(key->file);
 			    free(key);
 			}
 			else if (key->type == SSH2USERKEY) {
-			    char *buf = openssh_to_pubkey(key->key);
+			    char *buf = openssh_to_pubkey(SSH2(key));
 			    toCopy = srealloc(toCopy, strlen(toCopy) + strlen(buf) + 2);
 			    strcat(toCopy, buf);
 			    strcat(toCopy, "\n");
