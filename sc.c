@@ -148,6 +148,9 @@ int sc_init_library(void *f, int try_write_syslog, sc_lib *sclib,
     CK_SLOT_ID slots[16];
     CK_RV rv = 0;
     char *msg = "";
+
+    memset(sclib, 0, sizeof(sc_lib));
+
     sclib->hLib = LoadLibrary(filename_to_str(pkcs11_libfile));
 
     if (sclib->hLib == NULL) {
