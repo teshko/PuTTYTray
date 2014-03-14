@@ -14,7 +14,6 @@
 #include "tree234.h"
 
 #ifdef DO_PKCS11_AUTH
-#include "storage.h"
 #include "sc.h"
 #endif
 #ifdef DO_CAPI_AUTH
@@ -1452,7 +1451,7 @@ static void answer_msg(void *msg)
 	    key = find234(ssh2keys, &b, cmpkeys_ssh2_asymm);
 	    if (!key)
 		goto failure;
-#ifdef DO_PKCS11_AUTH
+#ifdef _DO_PKCS11_AUTH
 	    if((sclib != NULL) && (strcmp(key->comment, pkcs11_cert_label) == 0)) {
 		struct PassphraseProcStruct pps1;
 		pps1.comment = key->comment;
@@ -1484,7 +1483,7 @@ static void answer_msg(void *msg)
                 signature = _strdup("");
                 siglen = 0;
             }
-#ifdef DO_PKCS11_AUTH
+#ifdef _DO_PKCS11_AUTH
 	    }
 #endif
 #ifdef DO_CAPI_AUTH
@@ -2096,15 +2095,9 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 
                     if (numSelected == 0 || selectedArray[itemNum] == rCount + i) {
                         if (102 == LOWORD(wParam)) {
-#ifdef DO_PKCS11_AUTH
-			    if (skey->data != ((sc_lib*)sclib)->rsakey) {
-#endif
 			    del234(ssh2keys, skey);
 			    skey->alg->freekey(skey->data);
 			    sfree(skey);
-#ifdef DO_PKCS11_AUTH
-			    }
-#endif
 			} else {
                             char *buf = openssh_to_pubkey(skey);
                             toCopy = srealloc(toCopy, strlen(toCopy) + strlen(buf) + 2);
@@ -2848,66 +2841,7 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     }
 
     keylist = NULL;
-#ifdef DO_PKCS11_AUTH
-    if(ERROR_SUCCESS == RegOpenKey(HKEY_CURRENT_USER, PUTTY_REGKEY, &hkey)) {
-	sc_lib *scl;
-	TCHAR buf[MAX_PATH + 1];
-	int index_key = 0;
-	while(ERROR_SUCCESS == RegEnumKey(hkey, index_key, buf, MAX_PATH)) {
-	    char kn[1024];
-	    HKEY sesskey;
-	    sprintf(kn, "%s\\%s", PUTTY_REGKEY, buf);
-	    if (ERROR_SUCCESS == RegOpenKey(HKEY_CURRENT_USER, kn, &sesskey)) {
-		if ((pkcs11_cert_label = read_setting_s(sesskey, "PKCS11CertLabel")) != NULL) {
-		    if(strlen(pkcs11_cert_label) > 0) {
-			Filename *pkcs11_libfile = read_setting_filename(sesskey, "PKCS11LibFile");
-			pkcs11_token_label = read_setting_s(sesskey, "PKCS11TokenLabel");
-			{
-			    sclib = calloc(sizeof(sc_lib), 1);
-			    scl = (sc_lib*)sclib;
-			    if(sc_init_library(NULL, 1, scl, pkcs11_libfile)) {
-				int bloblen;
-				char *algorithm;
-				unsigned char *blob = sc_get_pub(NULL, 0, scl,
-				    pkcs11_token_label,
-				    pkcs11_cert_label,
-				    &algorithm,
-				    &bloblen);
-				if(blob == NULL) {
-				    sc_free_sclib(scl);
-				    sclib = NULL;
-				} else {
-				    struct ssh2_userkey *newKey = snew(struct ssh2_userkey);
 
-				    newKey->data = scl->rsakey;
-				    newKey->comment = pkcs11_cert_label;
-				    newKey->alg = find_pubkey_alg("ssh-rsa");
-
-				    if(add234(ssh2keys, newKey) != newKey) {
-					MessageBox(NULL, "Failed to add token key", "Pageant Error",
-					    MB_ICONERROR | MB_OK);
-				    }
-				    break;
-				    // todo support multiple keys
-				    // --------------------
-				}
-			    } else {
-				sfree(pkcs11_token_label);
-				pkcs11_token_label = NULL;
-				sfree(pkcs11_cert_label);
-				pkcs11_cert_label = NULL;
-			    }
-			}
-			sfree(pkcs11_libfile);
-		    }
-		}
-		RegCloseKey(sesskey);
-	    }
-	    index_key++;
-	}
-	RegCloseKey(hkey);
-    }
-#endif
     hwnd = CreateWindow(APPNAME, APPNAME,
 			WS_OVERLAPPEDWINDOW | WS_VSCROLL,
 			CW_USEDEFAULT, CW_USEDEFAULT,

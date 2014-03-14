@@ -58,6 +58,19 @@ typedef struct sc_pub_list_st {
     struct sc_pub_list_st *next;
 } sc_pub_list;
 
+typedef struct token {
+    CK_TOKEN_INFO token_info;
+    char *token_label;
+    sc_cert_list *certs;
+    int cert_count;
+    struct token *next;
+} sc_token_list;
+
+sc_token_list    *sc_probe_library(const char *file, char **msg);
+void              sc_free_token_list(sc_token_list *tokens);
+char             *sc_get_keystring_from_cert(sc_cert_list *p);
+unsigned char    *sc_get_pubblob_from_cert(sc_cert_list *p, int *bloblen);
+
 void              sc_write_syslog(char *msg);
 char             *sc_base64key(char *data, int len);
 
@@ -66,9 +79,9 @@ void              sc_free_sclib(sc_lib *sclib);
 CK_SESSION_HANDLE sc_get_session(void *f, int try_write_syslog, CK_FUNCTION_LIST_PTR fl,
                                  const char *token_label);
 
-sc_cert_list     *sc_get_cert_list(sc_lib *sclib, CK_SESSION_HANDLE session, char *err_msg);
+sc_cert_list     *sc_get_cert_list(CK_FUNCTION_LIST_PTR fl, CK_SESSION_HANDLE session, char *err_msg);
 void              sc_free_cert_list(sc_cert_list *cert_list);
-sc_pub_list      *sc_get_pub_list(sc_lib *sclib, CK_SESSION_HANDLE session, char *err_msg);
+sc_pub_list      *sc_get_pub_list(CK_FUNCTION_LIST_PTR fl, CK_SESSION_HANDLE session, char *err_msg);
 void              sc_free_pub_list(sc_pub_list *pub_list);
 
 unsigned char    *sc_get_pub(void *f, int try_write_syslog, sc_lib *sclib,

@@ -198,13 +198,12 @@ CK_SESSION_HANDLE sc_get_session(void *f, int try_write_syslog, CK_FUNCTION_LIST
                                  const char *token_label) {
 #define SC_MAX_SLOT 16
     CK_SESSION_HANDLE session = 0;
-    unsigned long slot_count = SC_MAX_SLOT;
+    unsigned long i, slot_count = SC_MAX_SLOT;
     CK_TOKEN_INFO token_info;
     CK_SLOT_ID slots[SC_MAX_SLOT];
     CK_SLOT_ID c_slot = SC_MAX_SLOT;
     CK_SLOT_ID slot = SC_MAX_SLOT;
     CK_RV rv  = 0;
-    int i;
     char msg[SC_STR_MAX_LEN] = "";
     
     sprintf(msg, "sc: sc_get_session called");
@@ -282,6 +281,81 @@ CK_SESSION_HANDLE sc_get_session(void *f, int try_write_syslog, CK_FUNCTION_LIST
     return 0;
 }
 
+sc_token_list *sc_probe_library(const char *file, char **msg) {
+    sc_token_list *tokens, *head = NULL;
+    unsigned long i, slot_count = 16;
+    CK_SLOT_ID slots[16];
+    CK_FUNCTION_LIST_PTR fl = 0;
+    HINSTANCE hLib = LoadLibrary(file);
+    CK_C_GetFunctionList pGFL = (CK_RV(*)(CK_FUNCTION_LIST_PTR_PTR))GetProcAddress(hLib, "C_GetFunctionList");
+    if (pGFL == NULL) {
+	*msg = dupprintf("Bad PKCS#11 library!");
+	return NULL;
+    }
+    if (pGFL(&fl) != CKR_OK) {
+	*msg = dupprintf("Unable to load functions from PKCS#11 library!");
+	return NULL;
+    }
+    if ((fl->C_Initialize(0) != CKR_OK)) {
+	*msg = dupprintf("Unable to initialize PKCS#11 library!");
+	return NULL;
+    }
+    if (fl->C_GetSlotList(TRUE, slots, &slot_count) != CKR_OK)
+	goto cleanup;
+    if (slot_count == 0)
+	goto cleanup;
+    tokens = malloc(sizeof(sc_token_list));
+    if (tokens == NULL) {
+	*msg = dupprintf("PKCS#11: Unable to allocate memory!");
+	goto cleanup;
+    }
+    head = tokens;
+    head->next = NULL;
+    for (i = 0; i < slot_count; i++) {
+	CK_SESSION_HANDLE session = 0;
+	if (tokens == NULL)
+	    tokens = malloc(sizeof(sc_token_list));
+	if ((tokens != NULL) && (fl->C_GetTokenInfo(slots[i], &tokens->token_info)) == CKR_OK) {
+	    char buf[32];
+	    int j = 30;
+	    memset(buf, 0, 32);
+	    strncpy(buf, tokens->token_info.label, 31);
+	    for (j = 30; (j > 0) && (buf[j] == ' '); j--)
+		buf[j] = '\0';
+	    tokens->token_label = calloc(sizeof(char), strlen(buf) + 1);
+	    if (tokens->token_label != NULL)
+		strcpy(tokens->token_label, buf);
+	    if ((fl->C_OpenSession(slots[i], CKF_SERIAL_SESSION | CKF_RW_SESSION, 0, 0, &session) == CKR_OK) && session) {
+		char msg[1024] = "";
+		sc_cert_list *cl =
+		    tokens->certs = sc_get_cert_list(fl, session, msg);
+		tokens->cert_count = 0;
+		while (cl != NULL) {
+		    tokens->cert_count++;
+		    cl = cl->next;
+		}
+		fl->C_CloseSession(session);
+	    }
+	    tokens = tokens->next;
+	}
+    }
+cleanup:
+    fl->C_Finalize(0);
+    FreeLibrary(hLib);
+    return head;
+}
+
+void sc_free_token_list(sc_token_list *tokens) {
+    while (tokens != NULL) {
+	sc_token_list *tl = tokens->next;
+	if (tokens->token_label)
+	    free(tokens->token_label);
+	sc_free_cert_list(tokens->certs);
+	free(tokens);
+	tokens = tl;
+    }
+}
+
 void sc_free_cert_list(sc_cert_list *cert_list) {
     sc_cert_list *cl = cert_list;
     while(cl != NULL) {
@@ -297,14 +371,13 @@ void sc_free_cert_list(sc_cert_list *cert_list) {
     cert_list = NULL;
 }
 
-sc_cert_list *sc_get_cert_list(sc_lib *sclib, CK_SESSION_HANDLE session, char *err_msg) {
+sc_cert_list *sc_get_cert_list(CK_FUNCTION_LIST_PTR fl, CK_SESSION_HANDLE session, char *err_msg) {
     CK_RV rv;
-    int i;
     /* STORE OBJECTS AND ATTRIBUTES */
     sc_cert_list *cl = NULL;
     sc_cert_list *pcl = NULL;
     CK_OBJECT_HANDLE list[SC_MAX_O];
-    CK_ULONG found = 0;
+    CK_ULONG i, found = 0;
     /* TEMPLATES: */
     CK_BBOOL        bFalse = 0;
     CK_BBOOL        bTrue = 1;
@@ -315,17 +388,17 @@ sc_cert_list *sc_get_cert_list(sc_lib *sclib, CK_SESSION_HANDLE session, char *e
         { CKA_PRIVATE,  &bFalse,            sizeof (bFalse) }
     };
 
-    rv = sclib->m_fl->C_FindObjectsInit(session, cert_template, sizeof(cert_template)/sizeof(CK_ATTRIBUTE));
+    rv = fl->C_FindObjectsInit(session, cert_template, sizeof(cert_template)/sizeof(CK_ATTRIBUTE));
     if (CKR_OK != rv) {
         sprintf(err_msg, "sc: C_FindObjectsInit (certificate) failed, 0x%.4x", (int)rv);
         return NULL;
     }
-    rv = sclib->m_fl->C_FindObjects(session, list, SC_MAX_O-1, &found);
+    rv = fl->C_FindObjects(session, list, SC_MAX_O-1, &found);
     if (CKR_OK != rv) {
         sprintf(err_msg, "sc: C_FindObjects (certificate) failed, 0x%.4x", (int)rv);
         return NULL;
     }
-    rv = sclib->m_fl->C_FindObjectsFinal(session);
+    rv = fl->C_FindObjectsFinal(session);
     if (CKR_OK != rv) {
         sprintf(err_msg, "sc: C_FindObjectsFinal (certificate) failed, 0x%.4x", (int)rv);
         return NULL;
@@ -342,13 +415,13 @@ sc_cert_list *sc_get_cert_list(sc_lib *sclib, CK_SESSION_HANDLE session, char *e
     pcl = cl;
     for(i=0; i<found; i++) {
         CK_OBJECT_HANDLE pO = list[i];
-        rv = sclib->m_fl->C_GetAttributeValue(session, pO, pcl->cert_attr, sizeof(pcl->cert_attr)/sizeof(CK_ATTRIBUTE));
+        rv = fl->C_GetAttributeValue(session, pO, pcl->cert_attr, sizeof(pcl->cert_attr)/sizeof(CK_ATTRIBUTE));
         if(CKR_OK == rv) {
             int nr;
             for(nr=0; nr<sizeof(pcl->cert_attr)/sizeof(CK_ATTRIBUTE); nr++) {
                 pcl->cert_attr[nr].pValue = calloc(pcl->cert_attr[nr].ulValueLen+1, sizeof(char *));
             }
-            rv = sclib->m_fl->C_GetAttributeValue(session, pO, pcl->cert_attr, sizeof(pcl->cert_attr)/sizeof(CK_ATTRIBUTE));
+            rv = fl->C_GetAttributeValue(session, pO, pcl->cert_attr, sizeof(pcl->cert_attr)/sizeof(CK_ATTRIBUTE));
             if(CKR_OK == rv) {
                 if(i<found-1) {
                     pcl->next = calloc(1, sizeof(sc_cert_list));
@@ -394,14 +467,13 @@ void sc_free_pub_list(sc_pub_list *pub_list) {
     pub_list = NULL;
 }
 
-sc_pub_list *sc_get_pub_list(sc_lib *sclib, CK_SESSION_HANDLE session, char *err_msg) {
+sc_pub_list *sc_get_pub_list(CK_FUNCTION_LIST_PTR fl, CK_SESSION_HANDLE session, char *err_msg) {
     CK_RV rv;
-    int i;
     /* STORE OBJECTS AND ATTRIBUTES */
     sc_pub_list *pl = NULL;
     sc_pub_list *ppl = NULL;
     CK_OBJECT_HANDLE list[SC_MAX_O];
-    CK_ULONG found = 0;
+    CK_ULONG i, found = 0;
     /* TEMPLATES: */
     CK_BBOOL        bFalse = 0;
     CK_BBOOL        bTrue = 1;
@@ -414,17 +486,17 @@ sc_pub_list *sc_get_pub_list(sc_lib *sclib, CK_SESSION_HANDLE session, char *err
         { CKA_PRIVATE,  &bFalse,            sizeof (bFalse) }
     };
 
-    rv = sclib->m_fl->C_FindObjectsInit(session, key_template, sizeof(key_template)/sizeof(CK_ATTRIBUTE));
+    rv = fl->C_FindObjectsInit(session, key_template, sizeof(key_template)/sizeof(CK_ATTRIBUTE));
     if (CKR_OK != rv) {
         sprintf(err_msg, "sc: C_FindObjectsInit (pub key) failed, 0x%.4x", (int)rv);
         return NULL;
     }
-    rv = sclib->m_fl->C_FindObjects(session, list, SC_MAX_O-1, &found);
+    rv = fl->C_FindObjects(session, list, SC_MAX_O-1, &found);
     if (CKR_OK != rv) {
         sprintf(err_msg, "sc: C_FindObjects (pub key) failed, 0x%.4x", (int)rv);
         return NULL;
     }
-    rv = sclib->m_fl->C_FindObjectsFinal(session);
+    rv = fl->C_FindObjectsFinal(session);
     if (CKR_OK != rv) {
         sprintf(err_msg, "sc: C_FindObjectsFinal (pub key) failed, 0x%.4x", (int)rv);
         return NULL;
@@ -442,13 +514,13 @@ sc_pub_list *sc_get_pub_list(sc_lib *sclib, CK_SESSION_HANDLE session, char *err
     ppl = pl;
     for(i=0; i<found; i++) {
         CK_OBJECT_HANDLE pO = list[i];
-        rv = sclib->m_fl->C_GetAttributeValue(session, pO, ppl->pub_attr, sizeof(ppl->pub_attr)/sizeof(CK_ATTRIBUTE));
+        rv = fl->C_GetAttributeValue(session, pO, ppl->pub_attr, sizeof(ppl->pub_attr)/sizeof(CK_ATTRIBUTE));
         if(CKR_OK == rv) {
             int nr;
             for(nr=0; nr<sizeof(ppl->pub_attr)/sizeof(CK_ATTRIBUTE); nr++) {
                 ppl->pub_attr[nr].pValue = calloc(ppl->pub_attr[nr].ulValueLen+1, sizeof(char *));
             }
-            rv = sclib->m_fl->C_GetAttributeValue(session, pO, ppl->pub_attr, sizeof(ppl->pub_attr)/sizeof(CK_ATTRIBUTE));
+            rv = fl->C_GetAttributeValue(session, pO, ppl->pub_attr, sizeof(ppl->pub_attr)/sizeof(CK_ATTRIBUTE));
             if(CKR_OK == rv) {
                 if(i<found-1) {
                     ppl->next = calloc(1, sizeof(sc_pub_list));
@@ -562,50 +634,12 @@ int find_substring(char* haystack, long haysize, const char* needle, long needle
   return -1;
 }
 
-unsigned char *generate_keystring (sc_lib *sclib, char **algorithm, 
-                                   int *blob_len,
-                                   unsigned char *expop, int elen,
-                                   unsigned char *modup, int mlen) {
-    unsigned char *expo, *modu;
+unsigned char *generate_keystring(int *blob_len,
+		unsigned char *expop, int elen,
+		unsigned char *modup, int mlen) {
     unsigned char *blob, *p;
-    int i;
-    expo = bignum_from_bytes(expop, elen);
-    modu = bignum_from_bytes(modup, mlen);
-
-    /* risacher: I'm not precisely sure why this is here */
-    /* or why it's written this way */
-    /* Are there any interesting cases where ((8 * x) + 8) / 8 != x+1 ? */ 
-
-    /* I suspect that this is to make sure that the modulus and
-       exponent are non-negative, but this is duplicative if the
-       public key was extracted from a certificate, since ASN.1 DER
-       already requires that integers start with a zero bit if
-       non-negative.  If the public key was retrieved from the
-       SmartCard directly, then PKCS#11 specifies that it should be a
-       "Big Integer", which is unsigned, and thus adding a leading
-       zero would be required (if the most significant bit is set),
-       because OpenSSH treats them as signed integers.  Since these
-       are handled as multi-precision integers, in theory leading
-       zeros won't matter but means that your public key string will
-       be 1-2 bytes longer than otherwise.
-    */
-
-    elen = ((8 * elen) + 8) / 8;
-    mlen = ((8 * mlen) + 8) / 8;
 
     *blob_len = 19 + elen + mlen;
-    *algorithm = calloc(sizeof(char *), strlen("ssh-rsa")+1);
-    strcpy(*algorithm, "ssh-rsa");
-    /* ugly (but used in pagent prototype) */
-    if(sclib->rsakey != NULL) {
-        free(sclib->rsakey->exponent);
-        free(sclib->rsakey->modulus);
-        free(sclib->rsakey);
-    }
-    sclib->rsakey = calloc(1, sizeof(struct RSAKey));
-    sclib->rsakey->exponent = expo;
-    sclib->rsakey->modulus = modu;
-
     blob = calloc(sizeof(char *), *blob_len);
     p = blob;
     SC_PUT_32BIT(p, 7);
@@ -614,19 +648,40 @@ unsigned char *generate_keystring (sc_lib *sclib, char **algorithm,
     p += 7;
     SC_PUT_32BIT(p, elen);
     p += 4;
-    for (i = elen; i--;) *p++ = bignum_byte(expo, i);
+    memcpy(p, expop, elen);
+    p += elen;
     SC_PUT_32BIT(p, mlen);
     p += 4;
-    for (i = mlen; i--;)
-        *p++ = bignum_byte(modu, i);
+    memcpy(p, modup, mlen);
     
-    sclib->m_SshPK = calloc(sizeof(char *), *blob_len);
-    memcpy(sclib->m_SshPK, blob, *blob_len);         
-    sclib->m_SshPK_len = *blob_len;
-    
-    sclib->m_SshPk_alg = calloc(sizeof(char *), strlen("ssh-rsa")+1);
-    strcpy(sclib->m_SshPk_alg, "ssh-rsa");
     return blob;
+}
+
+char *sc_get_keystring_from_cert(sc_cert_list *p) {
+    unsigned char *expop, *modup, *pub_key;
+    int elen, mlen, blob_len;
+
+    extract_key_from_cert(p->cert_attr[2].pValue, p->cert_attr[2].ulValueLen, &expop, &modup, &elen, &mlen);
+    pub_key = generate_keystring(&blob_len, expop, elen, modup, mlen);
+
+    if (pub_key) {
+	char *keystring;
+	char *buffi = sc_base64key(pub_key, blob_len);
+	keystring = calloc(1, strlen("ssh-rsa   ") + strlen(buffi) + p->cert_attr[0].ulValueLen);
+	sprintf(keystring, "ssh-rsa %s %s", buffi, p->cert_attr[0].pValue);
+	free(buffi);
+	free(pub_key);
+	return keystring;
+    }
+    return NULL;
+}
+
+unsigned char *sc_get_pubblob_from_cert(sc_cert_list *p, int *bloblen) {
+    unsigned char *expop, *modup;
+    int elen, mlen;
+
+    extract_key_from_cert(p->cert_attr[2].pValue, p->cert_attr[2].ulValueLen, &expop, &modup, &elen, &mlen);
+    return generate_keystring(bloblen, expop, elen, modup, mlen);
 }
 
 unsigned char *sc_get_pub(void *f, int try_write_syslog, sc_lib *sclib,
@@ -658,7 +713,7 @@ unsigned char *sc_get_pub(void *f, int try_write_syslog, sc_lib *sclib,
     {
         sc_cert_list *pcl;
         msg[0]='\0';
-        cl = sc_get_cert_list(sclib, session, msg);
+	cl = sc_get_cert_list(sclib->m_fl, session, msg);
         if(cl == NULL) goto err;
         if(strlen(msg) > 0) {
             logevent(f, msg);
@@ -666,7 +721,7 @@ unsigned char *sc_get_pub(void *f, int try_write_syslog, sc_lib *sclib,
         }
         pcl = cl;
         while(pcl != NULL) {
-            int len = strlen(cert_label);
+            unsigned int len = strlen(cert_label);
             if(pcl->cert_attr[0].ulValueLen < len) len = pcl->cert_attr[0].ulValueLen;
             if(strncmp(cert_label, pcl->cert_attr[0].pValue, len) == 0) {
                 sclib->m_KeyID = calloc(sizeof(char *), pcl->cert_attr[1].ulValueLen+1);
@@ -703,7 +758,7 @@ unsigned char *sc_get_pub(void *f, int try_write_syslog, sc_lib *sclib,
         sc_pub_list  *ppl;
         msg[0]='\0';
         
-        pl = sc_get_pub_list(sclib, session, msg);
+	pl = sc_get_pub_list(sclib->m_fl, session, msg);
         if(pl == NULL) goto err;
         if(strlen(msg) > 0) {
             logevent(f, msg);
@@ -717,8 +772,6 @@ unsigned char *sc_get_pub(void *f, int try_write_syslog, sc_lib *sclib,
                 // attr 0: id
                 // attr 2: modulus
                 // attr 3: exponent
-                unsigned char *blob;
-
                 {
                     char *p_buf = calloc(1, ppl->pub_attr[0].ulValueLen+1);
                     strncpy(p_buf, ppl->pub_attr[0].pValue, ppl->pub_attr[0].ulValueLen);
@@ -736,9 +789,26 @@ unsigned char *sc_get_pub(void *f, int try_write_syslog, sc_lib *sclib,
         }
         sc_free_pub_list(pl);
     }
-    pub_key = generate_keystring(sclib, algorithm, blob_len,
+    pub_key = generate_keystring(blob_len,
                                  expop, elen, 
                                  modup, mlen);
+    if(sclib->rsakey != NULL) {
+        free(sclib->rsakey->exponent);
+        free(sclib->rsakey->modulus);
+        free(sclib->rsakey);
+    }
+    sclib->rsakey = calloc(1, sizeof(struct RSAKey));
+    sclib->rsakey->exponent = bignum_from_bytes(expop, elen);
+    sclib->rsakey->modulus = bignum_from_bytes(modup, mlen);
+
+    sclib->m_SshPK = calloc(sizeof(char *), *blob_len);
+    memcpy(sclib->m_SshPK, pub_key, *blob_len);         
+    sclib->m_SshPK_len = *blob_len;
+    
+    sclib->m_SshPk_alg = calloc(sizeof(char *), strlen("ssh-rsa")+1);
+    strcpy(sclib->m_SshPk_alg, "ssh-rsa");
+    *algorithm = sclib->m_SshPk_alg;
+
     {
         char *buffi = sc_base64key(pub_key, *blob_len);
         if (sclib->keystring) { free(sclib->keystring); }
@@ -825,9 +895,8 @@ unsigned char *sc_sig(void *f, int try_write_syslog, sc_lib *sclib,
     };
     /* STORE OBJECTS AND ATTRIBUTES */
     CK_OBJECT_HANDLE list[SC_MAX_O];
-    CK_ULONG found = 0;
+    CK_ULONG ii, found = 0;
     CK_OBJECT_HANDLE pO;
-    int ii,j;
 
     unsigned char *ret = NULL;
     *sigblob_len = 0;
@@ -907,7 +976,7 @@ unsigned char *sc_sig(void *f, int try_write_syslog, sc_lib *sclib,
                     SHA_Simple(sigdata, sigdata_len, hash_sha);
                     //        MD5Simple(sigdata, sigdata_len, hash_md5);
                     {
-                        int message_len = sizeof(id_sha1) + sizeof(hash_sha);
+                        int j, message_len = sizeof(id_sha1) + sizeof(hash_sha);
                         CK_BYTE *message = calloc(sizeof(CK_BYTE), message_len);
                         for(j=0;j<sizeof(id_sha1);j++) message[j] = id_sha1[j]; 
                         memcpy((char *) &message[sizeof(id_sha1)], hash_sha, sizeof(hash_sha));

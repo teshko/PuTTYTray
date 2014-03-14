@@ -633,86 +633,61 @@ void *m_keystring_dlg = NULL;
 void *sc_get_label_dialog() {
     return m_label_dlg;
 }
-void *m_label_ctrl = NULL;
-void *m_cert_ctrl = NULL;
-void *m_keystring_ctrl = NULL;
+union control *m_label_ctrl = NULL;
+union control *m_cert_ctrl = NULL;
+union control *m_keystring_ctrl = NULL;
 void *sc_get_label_ctrl() {
     return m_label_ctrl;
 }
+sc_token_list *tokens = NULL;
+char *m_keystring_dlg_val = NULL;
 
 void sc_cert_handler(union control *ctrl, void *dlg, void *data, int event);
 void sc_tokenlabel_handler(union control *ctrl, void *dlg, void *data, int event ) {
     Conf *conf = (Conf *)data;
-    Filename *pkcs11_libfile;
+    char *msg = NULL;
+    int token_count = 0;
     m_label_dlg = dlg;
     m_label_ctrl = ctrl;
 
-    pkcs11_libfile = conf_get_filename(conf, CONF_pkcs11_libfile);
-    if(event == EVENT_REFRESH) {
-	char *pkcs11_token_label;
-	dlg_update_start(ctrl, dlg);
-	dlg_listbox_clear(ctrl, dlg);
-	if (filename_is_null(pkcs11_libfile)) {
-	    dlg_listbox_add(ctrl, dlg, "<E: SELECT LIBRARY FIRST!>");
-	} else {
-	    int i;
-	    CK_RV  rv = 0;
-	    HINSTANCE hLib = LoadLibrary(filename_to_str(pkcs11_libfile));
-	    CK_C_GetFunctionList pGFL = (CK_RV (*)(CK_FUNCTION_LIST_PTR_PTR))GetProcAddress(hLib, "C_GetFunctionList");
-	    if (pGFL == NULL) {
-		dlg_listbox_add(ctrl, dlg, "<E: WRONG LIBRARY!>");
+    switch (event) {
+    case EVENT_REFRESH:
+	{
+	    Filename *pkcs11_libfile = conf_get_filename(conf, CONF_pkcs11_libfile);
+	    if (tokens == NULL)
+		tokens = sc_probe_library(filename_to_str(pkcs11_libfile), &msg);
+	    dlg_update_start(ctrl, dlg);
+	    dlg_listbox_clear(ctrl, dlg);
+	    if (filename_is_null(pkcs11_libfile)) {
+		dlg_listbox_add(ctrl, dlg, "<E: SELECT LIBRARY FIRST!>");
 	    } else {
-		CK_FUNCTION_LIST_PTR fl  = 0;
-		rv = pGFL(&fl);
-		if(rv != CKR_OK) {
-		    dlg_listbox_add(ctrl, dlg, "<E: ACCESS TO LIBRARY FAILED!>");
-		} else {
-		    int rv1, rv2;
-		    unsigned long slot_count = 16;
-		    CK_SLOT_ID slots[16];
-		    rv1 = fl->C_Initialize(0);
-		    rv2 = fl->C_GetSlotList(TRUE, slots, &slot_count);
-		    if((rv1 != CKR_OK) || (rv2 != CKR_OK)) {
-			dlg_listbox_add(ctrl, dlg, "<E: NO SLOTS FOUND!>");
-		    } else {
-			if(slot_count == 0) {
-			    dlg_listbox_add(ctrl, dlg, "<E: NO TOKEN FOUND!>");
-			}
-			for(i=0; i<slot_count; i++) {
-			    CK_TOKEN_INFO token_info;
-			    CK_SLOT_ID slot = 64;
-			    slot = slots[i];
-			    fl->C_GetTokenInfo(slot,&token_info);
-			    {
-				char buf[40];
-				int j;
-				memset(buf, 0, 40);
-				strncpy(buf, token_info.label, 30);
-				for(j=29;j>0;j--) {
-				    if(buf[j] == ' ') {
-					buf[j] = '\0';
-				    } else {
-					break;
-				    }
-				}
-				dlg_listbox_add(ctrl, dlg, buf);
-			    }
-			}
+		if (tokens == NULL)
+		    dlg_listbox_add(ctrl, dlg, "<E: NO TOKEN FOUND!>");
+		else {
+		    sc_token_list *tl = tokens;
+		    while (tl != NULL) {
+			dlg_listbox_add(ctrl, dlg, tl->token_label);
+			if (token_count++ == 0)
+			    msg = tl->token_label;
+			tl = tl->next;
 		    }
-		    fl->C_Finalize(0);
 		}
 	    }
-	    FreeLibrary(hLib);
+	    if (token_count != 1)
+		msg = conf_get_str(conf, CONF_pkcs11_token_label);
+	    dlg_editbox_set(ctrl, dlg, msg);
+	    dlg_update_done(ctrl, dlg);
+	    if (token_count != 1)
+		break;
 	}
-	pkcs11_token_label = conf_get_str(conf, CONF_pkcs11_token_label);
-	dlg_editbox_set(ctrl, dlg, pkcs11_token_label);
-	dlg_update_done(ctrl, dlg);
-    } else if (event == EVENT_VALCHANGE) {
-	char *buf = dlg_editbox_get(ctrl, dlg);
-	if(strncmp(buf, "<E: ", 4) != 0){
-	    conf_set_str(conf, CONF_pkcs11_token_label, buf);
+    case EVENT_VALCHANGE:
+	{
+	    char *buf = dlg_editbox_get(ctrl, dlg);
+	    if(strncmp(buf, "<E: ", 4) != 0){
+		conf_set_str(conf, CONF_pkcs11_token_label, buf);
+	    }
+	    sfree(buf);
 	}
-	sfree(buf);
     }
     if(m_cert_dlg != NULL) {
 	sc_cert_handler(m_cert_ctrl, m_cert_dlg, data, EVENT_REFRESH);
@@ -722,74 +697,95 @@ void sc_tokenlabel_handler(union control *ctrl, void *dlg, void *data, int event
 void sc_keystring_handler(union control *ctrl, void *dlg, void *data, int event ) {
     m_keystring_dlg = dlg;
     m_keystring_ctrl = ctrl;
+    if (m_keystring_dlg_val) {
+	dlg_editbox_set(ctrl, dlg, m_keystring_dlg_val);
+	free(m_keystring_dlg_val);
+	m_keystring_dlg_val = NULL;
+    }
 }
 
 void sc_cert_handler(union control *ctrl, void *dlg, void *data, int event ) {
     Conf *conf = (Conf *)data;
-    sc_lib *scl;
+    int cert_count = 0;
     m_cert_dlg = dlg;
     m_cert_ctrl = ctrl;
 
-    scl = sclib;
-    if(event == EVENT_REFRESH) {
-	char *pkcs11_cert_label;
-	char *pkcs11_token_label = conf_get_str(conf, CONF_pkcs11_token_label);
-	dlg_update_start(ctrl, dlg);
-	dlg_listbox_clear(ctrl, dlg);
+    switch (event) {
+    case EVENT_REFRESH:
+	{
+	    char *pkcs11_cert_label = NULL;
+	    char *pkcs11_token_label = conf_get_str(conf, CONF_pkcs11_token_label);
+	    dlg_update_start(ctrl, dlg);
+	    dlg_listbox_clear(ctrl, dlg);
 	    if(pkcs11_token_label == NULL ||
 		strlen(pkcs11_token_label) == 0) {
 		    dlg_listbox_add(ctrl, dlg, "<E: SELECT TOKEN FIRST!>");
 	    } else {
-		Filename *pkcs11_libfile;
-		if (scl == NULL) { sclib = scl = calloc(sizeof(sc_lib), 1); }
-		pkcs11_libfile = conf_get_filename(conf, CONF_pkcs11_libfile);
-		sc_init_library(NULL, 0, scl, pkcs11_libfile);
-		if(scl->m_fl) {
-		    CK_SESSION_HANDLE session = sc_get_session(NULL, 0, scl->m_fl, pkcs11_token_label);
-		    if(session) {
-			char msg[1024] = "";
-			sc_cert_list *pcl;
-			sc_cert_list *cl = sc_get_cert_list(scl, session, msg);
-			pcl = cl;
-			while(pcl != NULL) {
-			    char *p_buf;
-			    p_buf = calloc(1,pcl->cert_attr[0].ulValueLen+1);
-			    strncpy(p_buf, pcl->cert_attr[0].pValue, pcl->cert_attr[0].ulValueLen);
-			    dlg_listbox_add(ctrl, dlg, p_buf);
+		sc_token_list *tl = tokens;
+		while (tl != NULL) {
+		    if (_stricmp(tl->token_label, pkcs11_token_label) == 0)
+			break;
+		    tl = tl->next;
+		}
+		if (tl != NULL) {
+		    sc_cert_list *pcl = tl->certs;
+		    while (pcl != NULL) {
+			char *p_buf;
+			p_buf = calloc(1, pcl->cert_attr[0].ulValueLen + 1);
+			strncpy(p_buf, pcl->cert_attr[0].pValue, pcl->cert_attr[0].ulValueLen);
+			dlg_listbox_add(ctrl, dlg, p_buf);
+			if (cert_count++ == 0)
+			    pkcs11_cert_label = p_buf;
+			else
 			    free(p_buf);
-			    pcl = pcl->next;
-			}
-			sc_free_cert_list(cl);
-			//          sclib->m_fl->C_CloseSession(session);
+			pcl = pcl->next;
 		    }
-		    //        sclib->m_fl->C_Finalize(0);
 		}
 	    }
-	    pkcs11_cert_label = conf_get_str(conf, CONF_pkcs11_cert_label);
-	    dlg_editbox_set(ctrl, dlg, pkcs11_cert_label);
+	    if (cert_count != 1)
+		dlg_editbox_set(ctrl, dlg, conf_get_str(conf, CONF_pkcs11_cert_label));
+	    else
+		dlg_editbox_set(ctrl, dlg, pkcs11_cert_label);
+	    sfree(pkcs11_cert_label);
 	    dlg_update_done(ctrl, dlg);
-    } else if (event == EVENT_VALCHANGE) {
-	char *token_label;
-	char *cert_label;
-	int blob_len;
-	char *algorithm; /* minor memory leak */
-	token_label = dlg_editbox_get(m_label_ctrl, dlg);
-	cert_label = dlg_editbox_get(ctrl, dlg);
-	if(strncmp(cert_label, "<E: ", 4) != 0) {
-	    conf_set_str(conf, CONF_pkcs11_cert_label, cert_label);
-	    sc_get_pub(NULL, 0, scl, token_label, cert_label, &algorithm, &blob_len);
-	    if (m_keystring_dlg != NULL && scl && scl->keystring != NULL) {
-		dlg_editbox_set(m_keystring_ctrl, m_keystring_dlg, scl->keystring);
-	    }
-	    if (sclib == NULL) {
-		dlg_editbox_set(m_keystring_ctrl, m_keystring_dlg, "no sclib");
-	    } else
-		if (((sc_lib*)sclib)->keystring == NULL) {
-		    dlg_editbox_set(m_keystring_ctrl, m_keystring_dlg, "no sclib keystring");
-		}
 	}
-	sfree(token_label);
-	sfree(cert_label);
+    case EVENT_VALCHANGE:
+	{
+	    char *token_label;
+	    char *cert_label;
+	    token_label = dlg_editbox_get(m_label_ctrl, dlg);
+	    cert_label = dlg_editbox_get(ctrl, dlg);
+	    if (strncmp(cert_label, "<E: ", 4) != 0) {
+		sc_token_list *tl = tokens;
+		conf_set_str(conf, CONF_pkcs11_cert_label, cert_label);
+		while (tl != NULL) {
+		    if (_stricmp(tl->token_label, token_label) == 0)
+			break;
+		    tl = tl->next;
+		}
+		if (tl != NULL) {
+		    sc_cert_list *pcl = tl->certs;
+		    while (pcl != NULL) {
+			if (_strnicmp(pcl->cert_attr[0].pValue, cert_label, pcl->cert_attr[0].ulValueLen) == 0) {
+			    char *keystring = sc_get_keystring_from_cert(pcl);
+			    if (m_keystring_dlg != NULL)
+				if (keystring != NULL) {
+				    dlg_editbox_set(m_keystring_ctrl, m_keystring_dlg, keystring);
+				    free(keystring);
+				}
+				else
+				    dlg_editbox_set(m_keystring_ctrl, m_keystring_dlg, "<E: NO KEYSTRING!>");
+			    else
+				m_keystring_dlg_val = keystring;
+			    break;
+			}
+			pcl = pcl->next;
+		    }
+		}
+	    }
+	    sfree(token_label);
+	    sfree(cert_label);
+	}
     }
 }
 
@@ -797,17 +793,30 @@ void sc_dlg_stdfilesel_handler11(union control *ctrl, void *dlg, void *data, int
 {
     int key = ctrl->fileselect.context.i;
     Conf *conf = (Conf *)data;
+    char *msg = NULL;
 
     if (event == EVENT_REFRESH) {
 	dlg_filesel_set(ctrl, dlg, conf_get_filename(conf, key));
     } else if (event == EVENT_VALCHANGE) {
 	Filename *filename = dlg_filesel_get(ctrl, dlg);
-	conf_set_filename(conf, key, filename);
-        filename_free(filename);
+	if (_stricmp(filename_to_str(filename),
+	    filename_to_str(conf_get_filename(conf, key)))) {
+	    conf_set_filename(conf, key, filename);
+	    if (tokens != NULL)
+		sc_free_token_list(tokens);
+	    tokens = sc_probe_library(filename_to_str(filename), &msg);
+	} else
+	    filename_free(filename);
+	if (msg) {
+	    free(msg);
+	    msg = NULL;
+	}
     }
-    if(sc_get_label_dialog() != NULL) {
+
+    if (sc_get_label_dialog() != NULL) {
 	sc_tokenlabel_handler(sc_get_label_ctrl(), sc_get_label_dialog(), data, EVENT_REFRESH);
     }
+    sfree(msg);
 }
 #endif
 

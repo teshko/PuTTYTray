@@ -7747,6 +7747,10 @@ static void ssh2_response_authconn(struct ssh_channel *c, struct Packet *pktin,
     do_ssh2_authconn(c->ssh, NULL, 0, pktin);
 }
 
+#ifdef DO_PKCS11_AUTH
+sc_lib *sclib;
+#endif
+
 static void do_ssh2_authconn(Ssh ssh, unsigned char *in, int inlen,
 			     struct Packet *pktin)
 {

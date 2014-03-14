@@ -420,10 +420,6 @@ struct keyvalwhere {
     int where;
 };
 
-#ifdef DO_PKCS11_AUTH
-void *sclib;	/* sc's owned struct */
-#endif
-
 #ifndef NO_GSSAPI
 extern const int ngsslibs;
 extern const char *const gsslibnames[]; /* for displaying in configuration */
