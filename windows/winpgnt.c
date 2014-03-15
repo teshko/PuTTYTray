@@ -22,6 +22,7 @@
 #include <CryptDlg.h>
 #include "capi.h"
 #endif
+#include <Commctrl.h>
 
 #include <shellapi.h>
 
@@ -884,7 +885,7 @@ typedef BOOL (WINAPI *PCertSelectCertificateA)(
 
 static void add_keyfile(Filename *filename); /* Forward reference */
 
-static void prompt_add_CAPIkey(HWND hwnd) {
+static void prompt_add_CAPIkey(HWND hwnd, int i) {
     HCERTSTORE hStore = NULL;
     CERT_SELECT_STRUCT_A* css = NULL;
     CERT_CONTEXT** acc = NULL;
@@ -894,7 +895,6 @@ static void prompt_add_CAPIkey(HWND hwnd) {
     Filename *certFile;
     HMODULE hCertDlgDLL = NULL;
     PCertSelectCertificateA f_csca = NULL;
-    int i = 0; /* TODO: Let the user choose this */
     struct CAPI_userkey* ckey = NULL;
 
     if ((hCertDlgDLL = LoadLibrary("CryptDlg.dll")) == NULL)
@@ -940,7 +940,7 @@ static void prompt_add_CAPIkey(HWND hwnd) {
 
     _snprintf(tmpCertID, sizeof(tmpCertID)-1,
 	"CAPI:%s\\0000000000000000000000000000000000000000",
-	i == 1 ? "Machine\\MY" : "User\\MY");
+	i == 1 ? "System\\MY" : "User\\MY");
 
     p = tmpCertID + 5 + (i == 1 ? 10 : 8);
     tmpSHA1size = sizeof(tmpSHA1);
@@ -2471,8 +2471,60 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 			       sizeof(tabs) / sizeof(*tabs),
 			       (LPARAM) tabs);
 	}
+#if defined(DO_PKCS11_AUTH) && defined(DO_CAPI_AUTH)
+	SendDlgItemMessage(hwnd, 111, UDM_SETRANGE, 0, MAKELPARAM(0, 4));
+#elif defined(DO_CAPI_AUTH)
+	SendDlgItemMessage(hwnd, 111, UDM_SETRANGE, 0, MAKELPARAM(0, 3));
+#elif defined(DO_PKCS11_AUTH)
+	SendDlgItemMessage(hwnd, 111, UDM_SETRANGE, 0, MAKELPARAM(0, 2));
+#else
+	SendDlgItemMessage(hwnd, 111, UDM_SETRANGE, 0, MAKELPARAM(0, 1));
+#endif
 	keylist_update();
 	return 0;
+#if defined(DO_PKCS11_AUTH) || defined(DO_CAPI_AUTH)
+      case WM_VSCROLL: {
+	      //blah
+	      int delta = SendDlgItemMessage(hwnd, 111, UDM_GETPOS, 0, 0);
+	      HWND hButton = GetDlgItem(hwnd, 101);
+	      char data[26];
+
+	      if (HIWORD(delta) == 0)
+		  break;
+
+	      switch (LOWORD(delta)){
+	      case 0:
+		  sprintf(data, "Add Keyfile");
+		  SendMessage(hButton, WM_SETTEXT, 0, (LPARAM)data);
+		  break;
+	      case 1:
+		  sprintf(data, "Add OpenSSH ~/.ssh/idrsa");
+		  SendMessage(hButton, WM_SETTEXT, 0, (LPARAM)data);
+		  break;
+#ifdef DO_CAPI_AUTH
+	      case 2:
+		  sprintf(data, "Add CAPI User");
+		  SendMessage(hButton, WM_SETTEXT, 0, (LPARAM)data);
+		  break;
+	      case 3:
+		  sprintf(data, "Add CAPI System");
+		  SendMessage(hButton, WM_SETTEXT, 0, (LPARAM)data);
+		  break;
+#endif
+#if defined(DO_PKCS11_AUTH) && defined(DO_CAPI_AUTH)
+	      case 4:
+#elif defined(DO_PKCS11_AUTH)
+	      case 2:
+#endif
+#ifdef DO_PKCS11_AUTH
+		  sprintf(data, "Add PKCS#11 Library");
+		  SendMessage(hButton, WM_SETTEXT, 0, (LPARAM)data);
+		  break;
+#endif
+	      }
+	  }
+	  return 0;
+#endif
       case WM_COMMAND:
 	switch (LOWORD(wParam)) {
 	  case IDOK:
@@ -2480,6 +2532,81 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 	    keylist = NULL;
 	    DestroyWindow(hwnd);
 	    return 0;
+#if defined(DO_PKCS11_AUTH) || defined(DO_CAPI_AUTH)
+	  case 101:		       /* add key */
+	      if (HIWORD(wParam) == BN_CLICKED ||
+		  HIWORD(wParam) == BN_DOUBLECLICKED) {
+		  if (passphrase_box) {
+		      MessageBeep(MB_ICONERROR);
+		      SetForegroundWindow(passphrase_box);
+		      break;
+		  }
+		  {
+		      int sel = SendDlgItemMessage(hwnd, 111, UDM_GETPOS, 0, 0);
+		      if (HIWORD(sel) == 0)
+			  break;
+		      switch (LOWORD(sel)) {
+		      case 0:
+			  prompt_add_keyfile();
+			  break;
+		      case 1: {
+			  Filename *path = get_id_rsa_path();
+			  if (!file_exists(path->path)
+			      && IDYES == MessageBox(hwnd, "~/.ssh/id_rsa doesn't exist, would you like to create it?",
+			      APPNAME, MB_YESNO)) {
+			      SHELLEXECUTEINFO ShExecInfo = { 0 };
+			      ShExecInfo.cbSize = sizeof(SHELLEXECUTEINFO);
+			      ShExecInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
+			      ShExecInfo.hwnd = hwnd;
+			      ShExecInfo.lpFile = our_path;
+			      ShExecInfo.lpParameters = "--as-gen --ssh-keygen";
+			      ShExecInfo.nShow = SW_SHOW;
+			      ShellExecuteEx(&ShExecInfo);
+			      WaitForSingleObject(ShExecInfo.hProcess, INFINITE);
+			      CloseHandle(ShExecInfo.hProcess);
+			  }
+			  add_keyfile(path);
+			  filename_free(path);
+			  keylist_update();
+			  break;
+		      }
+#ifdef DO_CAPI_AUTH
+		      case 2:
+			  prompt_add_CAPIkey(hwnd, 0);
+			  break;
+		      case 3:
+			  prompt_add_CAPIkey(hwnd, 1);
+			  break;
+#endif
+#if defined(DO_PKCS11_AUTH) && defined(DO_CAPI_AUTH)
+		      case 4:
+#elif defined(DO_PKCS11_AUTH)
+		      case 2:
+#endif
+#ifdef DO_PKCS11_AUTH
+			  //Do something
+			  prompt_add_PKCS11lib();
+			  break;
+#endif
+		      }
+		  }
+	      }
+	      return 0;
+	  case 113:
+	    if (!aboutbox) {
+		aboutbox = CreateDialog(hinst, MAKEINTRESOURCE(913),
+					NULL, AboutProc);
+		ShowWindow(aboutbox, SW_SHOWNORMAL);
+		/* 
+		 * Sometimes the window comes up minimised / hidden
+		 * for no obvious reason. Prevent this.
+		 */
+		SetForegroundWindow(aboutbox);
+		SetWindowPos(aboutbox, HWND_TOP, 0, 0, 0, 0,
+			     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+	    }
+	    break;
+#else
 	  case 101:		       /* add key */
 	    if (HIWORD(wParam) == BN_CLICKED ||
 		HIWORD(wParam) == BN_DOUBLECLICKED) {
@@ -2491,6 +2618,7 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		prompt_add_keyfile();
 	    }
 	    return 0;
+#endif
 	  case 102:		       /* remove key */
           case 108:                    /* copy fingerprints */
 	    if (HIWORD(wParam) == BN_CLICKED ||
@@ -2635,7 +2763,8 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		launch_help(hwnd, WINHELP_CTX_pageant_general);
             }
 	    return 0;
-          case 107: /* add ~/.ssh/id_rsa */
+#if !defined(DO_PKCS11_AUTH) && !defined(DO_CAPI_AUTH)
+	  case 107: /* add ~/.ssh/id_rsa */
             {
                 Filename *path = get_id_rsa_path();
                 if (!file_exists(path->path)
@@ -2657,6 +2786,7 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
                 keylist_update();
             }
 	    return 0;
+#endif
 #ifdef DO_CAPI_AUTH
 	  case 100: // listbox
 	    {
@@ -2683,18 +2813,6 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 			    capi_display_cert_ui(hwnd, ckey->certID, L"Pageant Certificate");
 			}
 		    }
-		}
-		return 0;
-	    }
-	  case 110:
-	    {
-		if (HIWORD(wParam) == BN_CLICKED || HIWORD(wParam) == BN_DOUBLECLICKED) {
-		    if (passphrase_box) {
-			MessageBeep(MB_ICONERROR);
-			SetForegroundWindow(passphrase_box);
-			break;
-		    }
-		    prompt_add_CAPIkey(hwnd);
 		}
 		return 0;
 	    }
@@ -2958,7 +3076,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 	    break;
 #ifdef DO_CAPI_AUTH
 	  case IDM_ADDCAPI:
-	      prompt_add_CAPIkey(GetDesktopWindow());
+	      prompt_add_CAPIkey(GetDesktopWindow(), 0);
 	      break;
 #endif
 #ifdef DO_CAPI_AUTH
