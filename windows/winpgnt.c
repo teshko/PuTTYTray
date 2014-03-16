@@ -1784,6 +1784,19 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 			    copy_size += strlen(tmpCopy->buf) + 1;
 			    toCopy = tmpCopy;
 			}
+			else /* if (key->type == RSAKEY) */ {
+			    struct copy_st *tmpCopy = snew(struct copy_st);
+			    char *dec1, *dec2;
+			    dec1 = bignum_decimal(RSA(key)->exponent);
+			    dec2 = bignum_decimal(RSA(key)->modulus);
+			    tmpCopy->buf = dupprintf("%d %s %s %s", bignum_bitcount(RSA(key)->modulus),
+				dec1, dec2, RSA(key)->comment);
+			    tmpCopy->prev = toCopy;
+			    copy_size += strlen(tmpCopy->buf) + 1;
+			    toCopy = tmpCopy;
+			    sfree(dec1);
+			    sfree(dec2);
+			}
                         itemNum--;
                     }
 		}
