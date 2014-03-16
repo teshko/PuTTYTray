@@ -1732,7 +1732,13 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		int i;
 		int Count;
 		int *selectedArray;
-                char *toCopy = _strdup("");
+
+		/* Use list to save our copy buffer */
+		size_t copy_size = 0;
+		struct copy_st {
+		    char * buf;
+		    struct copy_st *prev;
+		} *toCopy = NULL;
 
 		/* our counter within the array of selected items */
 		int itemNum;
@@ -1755,11 +1761,6 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		itemNum = numSelected - 1;
 		Count = count234(keys);
 		
-		/* go through the non-rsakeys until we've covered them all, 
-		 * and/or we're out of selected items to check. note that
-		 * we go *backwards*, to avoid complications from deleting
-		 * things hence altering the offset of subsequent items
-		 */
 	        for (i = Count - 1; (itemNum >= 0 || numSelected == 0) && (i >= 0); i--) {
 		    key = index234(keys, i);
 
@@ -1770,33 +1771,43 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 				SSH2(key)->alg->freekey(SSH2(key)->data);
 				sfree(SSH2(key));
 			    }
-			    else // if (key->type == RSAKEY)
+			    else /* if (key->type == RSAKEY) */
 				freersakey(RSA(key));
 			    remove_filename(key->file);
 			    filename_free(key->file);
 			    free(key);
 			}
 			else if (key->type == SSH2USERKEY) {
-			    char *buf = openssh_to_pubkey(SSH2(key));
-			    toCopy = srealloc(toCopy, strlen(toCopy) + strlen(buf) + 2);
-			    strcat(toCopy, buf);
-			    strcat(toCopy, "\n");
-			    sfree(buf);
-                        }
+			    struct copy_st *tmpCopy = snew(struct copy_st);
+			    tmpCopy->buf = openssh_to_pubkey(SSH2(key));
+			    tmpCopy->prev = toCopy;
+			    copy_size += strlen(tmpCopy->buf) + 1;
+			    toCopy = tmpCopy;
+			}
                         itemNum--;
                     }
 		}
 		
-                if (108 == LOWORD(wParam)) {
-                    const size_t len = strlen(toCopy) + 1;
-                    HGLOBAL hMem =  GlobalAlloc(GMEM_MOVEABLE, len);
-                    memcpy(GlobalLock(hMem), toCopy, len);
-                    GlobalUnlock(hMem);
+		if (108 == LOWORD(wParam) && copy_size > 0) {
+		    struct copy_st *tmpCopy;
+		    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, copy_size);
+		    char *buf = GlobalLock(hMem);
+		    while (toCopy) {
+			size_t len = strlen(toCopy->buf);
+			memcpy(buf, toCopy->buf, len);
+			buf += len;
+			*(buf++) = '\n';
+			tmpCopy = toCopy;
+			toCopy = toCopy->prev;
+			sfree(tmpCopy->buf);
+			sfree(tmpCopy);
+		    }
+		    *(--buf) = '\0';
+		    GlobalUnlock(hMem);
                     OpenClipboard(0);
                     EmptyClipboard();
                     SetClipboardData(CF_TEXT, hMem);
                     CloseClipboard();
-                    sfree(toCopy);
                 }
 
 		sfree(selectedArray); 
