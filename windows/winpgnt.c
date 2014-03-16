@@ -1389,7 +1389,8 @@ static void answer_msg(void *msg)
 		del234(keys, key);
 		keylist_update();
 		freersakey(RSA(key));
-		filename_free(key->file);
+		if (key->file)
+		    filename_free(key->file);
 		sfree(key);
 		ret[4] = SSH_AGENT_SUCCESS;
 	    }
@@ -1426,7 +1427,8 @@ static void answer_msg(void *msg)
 		keylist_update();
 		SSH2(key)->alg->freekey(SSH2(key)->data);
 		sfree(SSH2(key));
-		filename_free(key->file);
+		if (key->file)
+		    filename_free(key->file);
 		sfree(key);
 		ret[4] = SSH_AGENT_SUCCESS;
 	    }
@@ -1443,7 +1445,8 @@ static void answer_msg(void *msg)
 	    if (key->type == RSAKEY) {
 		del234(keys, key);
 		freersakey(RSA(key));
-		filename_free(key->file);
+		if (key->file)
+		    filename_free(key->file);
 		sfree(key);
 	    }
 	    keylist_update();
@@ -1465,7 +1468,8 @@ static void answer_msg(void *msg)
 		keylist_update();
 		SSH2(key)->alg->freekey(SSH2(key)->data);
 		sfree(SSH2(key));
-		filename_free(key->file);
+		if (key->file)
+		    filename_free(key->file);
 		sfree(key);
 	    }
 	    keylist_update();
@@ -1774,7 +1778,8 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 			    else /* if (key->type == RSAKEY) */
 				freersakey(RSA(key));
 			    remove_filename(key->file);
-			    filename_free(key->file);
+			    if (key->file)
+				filename_free(key->file);
 			    free(key);
 			}
 			else if (key->type == SSH2USERKEY) {
