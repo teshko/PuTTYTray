@@ -13,6 +13,8 @@
 #include "misc.h"
 #include "tree234.h"
 
+#include <Commctrl.h>
+
 #include <shellapi.h>
 
 #ifndef NO_SECURITY
@@ -116,11 +118,17 @@ typedef struct key_wrapper_st {
     void* key;
     enum keytype type;
     Filename *file;
+    int saved;
+    char *type_name;
+    char *keylength;
+    char *fingerprint;
+    char *comment;
 } key_wrapper;
 
 #define RSA(x) ((struct RSAKey*)x->key)
 #define SSH2(x) ((struct ssh2_userkey*)x->key)
 
+int initial;
 static tree234 *keys;
 BOOL saves_keys_status;
 
@@ -312,6 +320,65 @@ void toggle_startup() {
     }
 }
 
+void load_key_data(key_wrapper *key) {
+    key->saved = initial ? 1 : saves_keys();
+    if (key->type == RSAKEY) {
+	char temp[60], *p, *q;
+	int fp_len;
+	key->type_name = dupstr("ssh1");
+
+	rsa_fingerprint(temp, sizeof(temp), RSA(key));
+	fp_len = strlen(temp);
+	p = strchr(temp, ' ');
+	if (p && p < temp + fp_len) {
+	    *p = '\0';
+	    key->keylength = snewn(strlen(temp) + 1, char);
+	    strcpy(key->keylength, temp);
+	}
+	q = ++p;
+	p = strchr(q, ' ');
+	if (p && p < temp + fp_len) {
+	    *p = '\0';
+	    key->fingerprint = snewn(strlen(q) + 1, char);
+	    strcpy(key->fingerprint, q);
+	}
+	key->comment = dupstr(RSA(key)->comment);
+    }
+    else if (key->type == SSH2USERKEY) {
+	char *t, *p, *q;
+	int fp_len;
+
+	t = p = SSH2(key)->alg->fingerprint(SSH2(key)->data);
+	fp_len = strlen(t);
+
+	p = strchr(p, ' ');
+	if (p && p < t + fp_len) {
+	    *p = '\0';
+	    key->type_name = snewn(strlen(t) + 1, char);
+	    strcpy(key->type_name, t);
+	}
+	q = ++p;
+	p = strchr(p, ' ');
+	if (p && p < t + fp_len) {
+	    *p = '\0';
+	    key->keylength = snewn(strlen(q) + 1, char);
+	    strcpy(key->keylength, q);
+	}
+	p++;
+	key->fingerprint = snewn(strlen(p) + 1, char);
+	strcpy(key->fingerprint, p);
+	key->comment = dupstr(SSH2(key)->comment);
+	sfree(t);
+    }
+}
+
+void free_key_data(key_wrapper *key){
+    sfree(key->type_name);
+    sfree(key->keylength);
+    sfree(key->fingerprint);
+    sfree(key->comment);
+}
+
 
 static HWND passphrase_box;
 
@@ -365,6 +432,37 @@ static int CALLBACK PassphraseProc(HWND hwnd, UINT msg,
     return 0;
 }
 
+void InsertRow(HWND hWnd, int pos, key_wrapper *key)
+{
+    LV_ITEM	lvItem;
+
+    lvItem.mask = 0;
+    lvItem.iItem = pos;
+    lvItem.iSubItem = 0;
+    lvItem.iItem = ListView_InsertItem(hWnd, &lvItem);
+
+    lvItem.mask = LVIF_TEXT;
+    lvItem.pszText = key->type_name;
+    lvItem.cchTextMax = strlen(lvItem.pszText);
+    ListView_SetItem(hWnd, &lvItem);
+
+    lvItem.iSubItem = 1;
+    lvItem.pszText = key->keylength;
+    lvItem.cchTextMax = strlen(lvItem.pszText);
+    ListView_SetItem(hWnd, &lvItem);
+
+    lvItem.iSubItem = 2;
+    lvItem.pszText = key->fingerprint;
+    lvItem.cchTextMax = strlen(lvItem.pszText);
+    ListView_SetItem(hWnd, &lvItem);
+
+    lvItem.iSubItem = 3;
+    lvItem.pszText = key->comment;
+    lvItem.cchTextMax = strlen(lvItem.pszText);
+    ListView_SetItem(hWnd, &lvItem);
+}
+
+
 /*
  * Update the visible key list.
  */
@@ -372,52 +470,11 @@ static void keylist_update(void)
 {
     key_wrapper *key;
     int i;
-
     if (keylist) {
-	SendDlgItemMessage(keylist, 100, LB_RESETCONTENT, 0, 0);
+	HWND KeyList = GetDlgItem(keylist, 100);
+	SendMessage(KeyList, LVM_DELETEALLITEMS, 0, 0);
 	for (i = 0; NULL != (key = index234(keys, i)); i++)
-	if (key->type == RSAKEY) {
-	    char listentry[512], *p;
-	    /*
-	     * Replace two spaces in the fingerprint with tabs, for
-	     * nice alignment in the box.
-	     */
-	    strcpy(listentry, "ssh1\t");
-	    p = listentry + strlen(listentry);
-	    rsa_fingerprint(p, sizeof(listentry) - (p - listentry), RSA(key));
-	    p = strchr(listentry, ' ');
-	    if (p)
-		*p = '\t';
-	    p = strchr(listentry, ' ');
-	    if (p)
-		*p = '\t';
-	    SendDlgItemMessage(keylist, 100, LB_ADDSTRING,
-			       0, (LPARAM) listentry);
-	}
-	else if (key->type == SSH2USERKEY) {
-	    char *listentry, *p;
-	    int fp_len;
-	    /*
-	     * Replace two spaces in the fingerprint with tabs, for
-	     * nice alignment in the box.
-	     */
-	    p = SSH2(key)->alg->fingerprint(SSH2(key)->data);
-            listentry = dupprintf("%s\t%s", p, SSH2(key)->comment);
-            fp_len = strlen(listentry);
-            sfree(p);
-
-	    p = strchr(listentry, ' ');
-	    if (p && p < listentry + fp_len)
-		*p = '\t';
-	    p = strchr(listentry, ' ');
-	    if (p && p < listentry + fp_len)
-		*p = '\t';
-
-	    SendDlgItemMessage(keylist, 100, LB_ADDSTRING, 0,
-			       (LPARAM) listentry);
-            sfree(listentry);
-	}
-	SendDlgItemMessage(keylist, 100, LB_SETCURSEL, (WPARAM) - 1, 0);
+	    InsertRow(KeyList, i, key);
     }
 }
 
@@ -712,6 +769,8 @@ static char *add_keyfile_ret(Filename *filename)
 		sfree(key->file);
 		sfree(key);
 	    }
+	    else 
+		load_key_data(key);
 	}
     } else {
 	if (already_running) {
@@ -767,6 +826,8 @@ static char *add_keyfile_ret(Filename *filename)
 		sfree(key->file);
 		sfree(key);
 	    }
+	    else
+		load_key_data(key);
 	}
     }
     return NULL;
@@ -822,6 +883,7 @@ static void load_registry_keys() {
 	    filename_free(filename);
         }
     }
+    initial = 0;
 }
 
 /*
@@ -1266,6 +1328,7 @@ static void answer_msg(void *msg)
 		key->type = RSAKEY;
 		key->key = rkey;
 		if (add234(keys, key) == key) {
+		    load_key_data(key);
 		    keylist_update();
 		    ret[4] = SSH_AGENT_SUCCESS;
 		}
@@ -1350,6 +1413,7 @@ static void answer_msg(void *msg)
 		key->type = SSH2USERKEY;
 		key->key = skey;
 		if (add234(keys, key) == key) {
+		    load_key_data(key);
 		    keylist_update();
 		    ret[4] = SSH_AGENT_SUCCESS;
 		}
@@ -1387,6 +1451,7 @@ static void answer_msg(void *msg)
 	    ret[4] = SSH_AGENT_FAILURE;
 	    if (key) {
 		del234(keys, key);
+		free_key_data(key);
 		keylist_update();
 		freersakey(RSA(key));
 		if (key->file)
@@ -1424,6 +1489,7 @@ static void answer_msg(void *msg)
 	    ret[4] = SSH_AGENT_FAILURE;
 	    if (key) {
 		del234(keys, key);
+		free_key_data(key);
 		keylist_update();
 		SSH2(key)->alg->freekey(SSH2(key)->data);
 		sfree(SSH2(key));
@@ -1444,6 +1510,7 @@ static void answer_msg(void *msg)
 	    while ((key = index234(keys, 0)) != NULL)
 	    if (key->type == RSAKEY) {
 		del234(keys, key);
+		free_key_data(key);
 		freersakey(RSA(key));
 		if (key->file)
 		    filename_free(key->file);
@@ -1465,6 +1532,7 @@ static void answer_msg(void *msg)
 	    while ((key = index234(keys, 0)) != NULL)
 	    if (key->type == RSAKEY) {
 		del234(keys, key);
+		free_key_data(key);
 		keylist_update();
 		SSH2(key)->alg->freekey(SSH2(key)->data);
 		sfree(SSH2(key));
@@ -1681,6 +1749,31 @@ static int file_exists(const char *path) {
     return fp != NULL;
 }
 
+BOOL customdraw_handler(HWND hwnd,UINT message,WPARAM wParam,LPARAM lParam)
+{
+    LPNMLISTVIEW pnm = (LPNMLISTVIEW)lParam;
+    key_wrapper *key;
+
+    if (pnm->hdr.code == NM_CUSTOMDRAW) {
+	LPNMLVCUSTOMDRAW lplvcd = (LPNMLVCUSTOMDRAW)lParam;
+	switch(lplvcd->nmcd.dwDrawStage) {
+        case CDDS_PREPAINT :
+	    SetWindowLong(hwnd,DWL_MSGRESULT,CDRF_NOTIFYITEMDRAW);
+	    return CDRF_NOTIFYITEMDRAW;
+	case CDDS_ITEMPREPAINT: {
+	    int row = lplvcd->nmcd.dwItemSpec;
+	    key = index234(keys, row);
+	    if(row % 2)
+		lplvcd->clrTextBk = GetSysColor(COLOR_BTNFACE);
+	    if (!key->saved)
+		lplvcd->clrText=RGB(255, 0, 0);
+	    return CDRF_NEWFONT;
+	    }
+	}
+    }
+    return FALSE;
+}
+
 /*
  * Dialog-box function for the key list box.
  */
@@ -1709,8 +1802,40 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 			       sizeof(tabs) / sizeof(*tabs),
 			       (LPARAM) tabs);
 	}
+	{
+	    HWND ListView = GetDlgItem(keylist, 100);
+	    LV_COLUMN Column = { LVCF_TEXT | LVCF_WIDTH, 0, 0, NULL, 0, 0 };
+
+	    ListView_SetExtendedListViewStyle(ListView, LVS_EX_FULLROWSELECT | LVS_EX_INFOTIP);
+
+	    /* Define listview columns */
+	    Column.pszText = "Type";
+	    Column.cx = 60;
+	    Column.cchTextMax = strlen(Column.pszText);
+	    Column.iSubItem = 0;
+	    ListView_InsertColumn(ListView, 0, &Column);
+	    Column.pszText = "Length";
+	    Column.cx = 50;
+	    Column.cchTextMax = strlen(Column.pszText);
+	    Column.iSubItem = 1;
+	    ListView_InsertColumn(ListView, 1, &Column);
+	    Column.pszText = "Fingerprint";
+	    Column.cx = 260;
+	    Column.cchTextMax = strlen(Column.pszText);
+	    Column.iSubItem = 2;
+	    ListView_InsertColumn(ListView, 2, &Column);
+	    Column.pszText = "Comment";
+	    Column.cx = 90;
+	    Column.cchTextMax = strlen(Column.pszText);
+	    Column.iSubItem = 3;
+	    ListView_InsertColumn(ListView, 3, &Column);
+	}
 	keylist_update();
 	return 0;
+      case WM_NOTIFY:
+	  if (LOWORD(wParam) == 100)
+	      return customdraw_handler(hwnd, msg, wParam, lParam);
+	  return 0;
       case WM_COMMAND:
 	switch (LOWORD(wParam)) {
 	  case IDOK:
@@ -1735,7 +1860,10 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		HIWORD(wParam) == BN_DOUBLECLICKED) {
 		int i;
 		int Count;
-		int *selectedArray;
+		struct sel_st {
+		    int item;
+		    struct sel_st *prev;
+		} *selectedList = NULL;
 
 		/* Use list to save our copy buffer */
 		size_t copy_size = 0;
@@ -1744,33 +1872,41 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		    struct copy_st *prev;
 		} *toCopy = NULL;
 
-		/* our counter within the array of selected items */
-		int itemNum;
-		
 		/* get the number of items selected in the list */
-		int numSelected = 
-			SendDlgItemMessage(hwnd, 100, LB_GETSELCOUNT, 0, 0);
-		
+		int numSelected = 0;
+		HWND ListView = GetDlgItem(hwnd, 100);
+
+		int iPos = ListView_GetNextItem(ListView, -1, LVNI_SELECTED);
+
+		while (iPos != -1) {
+		    struct sel_st * temp = snew(struct sel_st);
+		    temp->item = iPos;
+		    temp->prev = selectedList;
+		    selectedList = temp;
+		    numSelected++;
+		    iPos = ListView_GetNextItem(ListView, iPos, LVNI_SELECTED);
+		}
+
 		/* none selected? that was silly */
 		if (102 == LOWORD(wParam) && numSelected == 0) {
 		    MessageBeep(0);
 		    break;
 		}
 
-		/* get item indices in an array */
-		selectedArray = snewn(numSelected, int);
-		SendDlgItemMessage(hwnd, 100, LB_GETSELITEMS,
-				numSelected, (WPARAM)selectedArray);
-		
-		itemNum = numSelected - 1;
 		Count = count234(keys);
 		
-	        for (i = Count - 1; (itemNum >= 0 || numSelected == 0) && (i >= 0); i--) {
+		for (i = Count - 1; (selectedList || numSelected == 0) && (i >= 0); i--) {
 		    key = index234(keys, i);
 
-                    if (numSelected == 0 || selectedArray[itemNum] == i) {
+		    if (numSelected == 0 || selectedList->item == i) {
+			struct sel_st * temp = selectedList;
+			if (temp) {
+			    selectedList = selectedList->prev;
+			    free(temp);
+			}
 			if (102 == LOWORD(wParam)) {
 			    del234(keys, key);
+			    free_key_data(key);
 			    if (key->type == SSH2USERKEY) {
 				SSH2(key)->alg->freekey(SSH2(key)->data);
 				sfree(SSH2(key));
@@ -1802,7 +1938,6 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 			    sfree(dec1);
 			    sfree(dec2);
 			}
-                        itemNum--;
                     }
 		}
 		
@@ -1828,7 +1963,6 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
                     CloseClipboard();
                 }
 
-		sfree(selectedArray); 
 		keylist_update();
 	    }
 	    return 0;
@@ -2359,6 +2493,8 @@ int pageant_main(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
      * See if we can find our Help file.
      */
     init_help();
+
+    initial = 1;
 
     if (!GetModuleFileName(NULL, our_path, MAX_PATH))
         modalfatalbox("GetModuleFileName failed?!");
